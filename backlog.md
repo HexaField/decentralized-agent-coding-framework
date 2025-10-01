@@ -21,6 +21,13 @@ This backlog breaks the project into actionable items across all workstreams. Ke
 - [ ] Rate limiting/quota middleware (token-based).
 - [ ] Correlation IDs and structured logging.
 
+## 1b) Orchestrator (decentralized)
+
+- [ ] Capacity report (/health); list workloads (/pods); schedule (/schedule); evict (/evict); task-update (/task-update).
+- [ ] Peer discovery via Tailscale hostnames; negotiation/scoring protocol.
+- [ ] Remote placement and forwarding; logs/results streamed back to requester.
+- [ ] Kubernetes control integration (k3s/microk8s/kubelet); explore Virtual Kubelet.
+
 ## 2) MCP (Memory & Context Plane)
 
 - [ ] API contracts: ingest, search, context assembly.
@@ -71,7 +78,7 @@ This backlog breaks the project into actionable items across all workstreams. Ke
 - [ ] Provider controls: local/cloud override per request.
 - [ ] Error/empty/loading states; accessibility pass.
 
-## 9) Security
+## 9) Security & Governance
 
 - [ ] Non-root containers, least caps, read-only FS where feasible.
 - [ ] Secrets handling: env vars or Docker secrets; never in repo.
@@ -122,7 +129,13 @@ This backlog breaks the project into actionable items across all workstreams. Ke
 - [ ] Example flows: local-only vs cloud-fallback.
 - [x] Troubleshooting guide (ports, permissions, KVM, GPU).
 
-## 16) Nice-to-haves (later)
+## 16) Ecosystem integrations
+
+- [ ] code-server: k8s pod spec, service, and integration with orchestrator.
+- [ ] Radicle peer: container/pod with persisted identity; workflows.
+- [ ] Obsidian vault + MCP indexing path.
+
+## 17) Nice-to-haves (later)
 
 - [ ] Autoscaling agents/VMs; queue depth based scaling.
 - [ ] Multi-tenant RBAC; project/workspace isolation.

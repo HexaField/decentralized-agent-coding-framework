@@ -1,7 +1,7 @@
 # Constitution
 
 Authoritative sources
-- Architecture: ../decentralized_ai_dev_architecture.md
+- Architecture: ../ARCHITECTURE.md
 - Implementation plan: ../IMPLEMENTATION_PLAN.md
 - Backlog: ../backlog.md
 

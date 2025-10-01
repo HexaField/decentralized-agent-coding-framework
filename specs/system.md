@@ -1,15 +1,15 @@
 # System overview
 
-This repository implements a Dockerized orchestrator backend (TypeScript/Node) with WebSocket streaming and a local-first AI development architecture. The backend runs in a container (port 8080) and laterally connects to MCP, storage, vector store, agents, VM containers, and Ollama on a private Docker network. A local web UI on the host targets http://localhost:8080.
+This repository implements a decentralized AI-augmented development architecture: per-machine orchestrators peer over Tailscale and schedule workloads onto local Kubernetes nodes/pods. MCP provides context; Spec-Kit tracks tasks; Radicle supports decentralized collaboration; Obsidian vault supplies knowledge. Local Dev mode runs a Dockerized backend (port 8080) with sibling containers, matching the same architecture.
 
 Key docs
-- Architecture: ../decentralized_ai_dev_architecture.md
+- Architecture: ../ARCHITECTURE.md
 - Implementation plan: ../IMPLEMENTATION_PLAN.md
 - Backlog: ../backlog.md
 
-Interfaces (current)
-- REST: GET /health, GET /ready, POST /v1/jobs, GET /v1/jobs/:id, POST /v1/jobs/:id/cancel, GET /v1/context/search
-- WS: /v1/stream (status/heartbeat)
+Interfaces
+- REST: GET /health, POST /schedule, GET /pods, POST /evict, POST /task-update, GET /context/search
+- WS: /stream/{id} (status/heartbeat/log/result)
 - OpenAPI outline: GET /openapi.json
 
 Principles

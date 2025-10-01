@@ -8,7 +8,7 @@ This repo uses GitHub Spec Kit (Specify CLI) to capture system specs and drive d
   - Check specs: `scripts/spec_kit_check.sh`
 
 Context documents for AI:
-- `decentralized_ai_dev_architecture.md`
+- `ARCHITECTURE.md`
 - `IMPLEMENTATION_PLAN.md`
 - `backlog.md`
 

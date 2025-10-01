@@ -1,6 +1,6 @@
 # Decentralized Agent Coding Framework
 
-Local‑first, containerized orchestration for AI agents and VM workloads. The backend runs in Docker, talks laterally to other containers (agents, MCP, storage, vector DB, Ollama), and a host‑local web UI connects over http://localhost:8080.
+Decentralized, AI‑augmented development platform with per‑machine orchestrators that peer over Tailscale and schedule workloads onto local Kubernetes nodes/pods. Local Dev mode runs a Dockerized backend and host‑local UI, matching the same architecture.
 
 ## Goal
 
@@ -9,10 +9,11 @@ Local‑first, containerized orchestration for AI agents and VM workloads. The b
 
 ## How it works
 
-- Host UI (localhost:3000) calls the backend at http://localhost:8080 (REST + WS).
-- The backend container discovers peers on a private Docker network by service name.
-- Optional services: MCP (context), storage (SQLite/Postgres), vector DB, agent/VM containers, Ollama.
-- WebSockets stream job status/logs; heartbeats keep long jobs visible.
+- Each machine runs a lightweight orchestrator that manages local k8s workloads (k3s/microk8s/kubelet).
+- Orchestrators peer over Tailscale and negotiate workload placement; logs/results stream back to the requester.
+- MCP provides context (ingest/search/pack); Obsidian vault feeds MCP; agents consume context.
+- Spec‑Kit tracks tasks/requirements; agents can update it.
+- Local dev mode: Dockerized backend on :8080 and host UI on :3000; agent/VM/Ollama as sibling containers.
 
 API surface (current)
 
@@ -20,7 +21,7 @@ API surface (current)
 - WS: /v1/stream (status/heartbeat)
 - OpenAPI outline: GET /openapi.json
 
-See `decentralized_ai_dev_architecture.md` and `IMPLEMENTATION_PLAN.md` for the full picture.
+See `ARCHITECTURE.md` and `IMPLEMENTATION_PLAN.md` for details.
 
 ## Status
 
@@ -39,6 +40,8 @@ See `decentralized_ai_dev_architecture.md` and `IMPLEMENTATION_PLAN.md` for the 
 - [ ] API expansion + OpenAPI spec
 - [ ] Reverse proxy (Caddy/Traefik) + prod hardening
 - [ ] E2E tests and CI caching
+- [ ] Peer discovery via Tailscale; negotiation protocol
+- [ ] Kubernetes integration (k3s/microk8s) for per‑machine scheduling
 
 ## Get started
 

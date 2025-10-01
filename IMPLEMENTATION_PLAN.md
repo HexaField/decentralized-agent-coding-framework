@@ -1,14 +1,14 @@
-# Implementation Plan: Dockerized Decentralized AI Development Platform
+# Implementation Plan: Decentralized AI‑Augmented Development Platform
 
-This document expands the implementation plan with detailed technical requirements for running the backend in a Docker container, laterally connected to VM/agent containers on a private network, with a locally run web frontend and an Ollama runtime for local inference plus optional cloud fallback.
+This plan describes a single architecture: per‑machine orchestrators peered over Tailscale, scheduling workloads onto local Kubernetes nodes/pods, with MCP for context, Spec‑Kit for task tracking, Radicle for decentralized collaboration, and an Obsidian vault for knowledge. A “Local Dev” appendix documents running the same architecture locally with a Dockerized backend and host UI.
 
 ---
 
 ## 1) Scope and assumptions
 
-- Local development: macOS host with Docker Desktop; frontend runs on host (e.g., :3000), backend in container (:8080), Ollama either in a container (private network) or on host (:11434).
-- Production/staging: Linux hosts; optional NVIDIA GPUs; KVM available for VM acceleration; private mesh (e.g., Tailscale) optional.
-- No Compose or Kubernetes manifests included here; this doc is requirements- and contract-focused only.
+- Local development: macOS host with Docker; frontend on host (:3000), backend container (:8080); Ollama as container or host (:11434). Agents/VMs as sibling containers.
+- Production: Linux hosts with k3s/microk8s or kubelet; NVIDIA GPUs optional; KVM available; Tailscale mesh connects machines.
+- This doc focuses on requirements and contracts; manifests provided later.
 
 ---
 
@@ -44,30 +44,27 @@ Derived technical requirements
 
 ## 2) Milestones and deliverables
 
-- M0 Foundations (Week 1)
-  - Private container network established.
-  - Backend container exposes :8080 to host; health/readiness endpoints available.
-  - Frontend can call backend; CORS configured; WebSocket upgrades verified.
+- M0 Foundations
+  - Dockerized backend on :8080; host UI on :3000; CORS/WS verified.
+  - MCP, storage, vector, and Ollama reachable (local network/host).
 
-- M1 Context & Storage (Week 2)
-  - MCP service reachable on private network; storage selected (SQLite/Postgres) and connected.
-  - Basic context ingestion and retrieval flows working.
+- M1 Local orchestrator
+  - Orchestrator reports node capacity; exposes /health, /pods; launches pods via k3s/microk8s.
+  - Basic scheduling within the local node; log streaming.
 
-- M2 Local inference (Week 3)
-  - Ollama reachable by backend/agents; models pre-pulled and pinned.
-  - Provider routing (local-first, cloud-fallback) implemented with per-request override.
+- M2 Peer discovery & negotiation
+  - Tailscale discovery using device hostnames; capacity exchange and scoring.
+  - /schedule API selects local or remote node; forwards and tracks jobs.
 
-- M3 Agents & VMs (Week 4)
-  - One agent container integrated and producing output via WS to frontend.
-  - One VM container integrated (QEMU on macOS, KVM on Linux); ephemeral lifecycle and job handoff verified.
+- M3 Kubernetes integration
+  - Remote placement via k8s APIs or Virtual Kubelet pattern.
+  - Ephemeral pods for code-server, agents, VMs; artifact handoff.
 
-- M4 Observability & Security (Week 5)
-  - Logs, metrics, optional traces wired; dashboards with key SLOs.
-  - Basic authZ/N; rate limits; secrets management; non-root, least caps.
+- M4 Spec‑Kit & MCP integration
+  - Orchestrator updates Spec‑Kit tasks; MCP ingest/search contexts available to agents/jobs.
 
-- M5 Production hardening (Week 6)
-  - Reverse proxy with TLS; persistence volumes; GPU enablement (if applicable).
-  - Runbooks and acceptance criteria validated via E2E tests.
+- M5 Security & governance
+  - ACLs, signed manifests, quotas, audit logs; reverse proxy, TLS, and rate limits.
 
 ---
 
@@ -78,7 +75,7 @@ Derived technical requirements
   - Service URLs: MCP_URL, STORAGE_URL, VECTOR_DB_URL, OLLAMA_BASE_URL, CLOUD_PROVIDER_BASE_URL.
   - Secrets: CLOUD_API_KEYS (OpenAI/Anthropic/etc.), DB credentials; inject via env or Docker secrets.
   - Frontend: API_BASE_URL (http://localhost:8080), feature flags (localLLMPreferred, enableCloudFallback).
-  - Networking: PRIVATE_NETWORK_NAME (e.g., dev-mesh), SERVICE_NAMES (mcp, storage, ollama).
+  - Networking: PRIVATE_NETWORK_NAME (for local Docker dev), SERVICE_NAMES (mcp, storage, ollama), plus Tailscale device name, tailnet, ACL profile, and K8s API URL/context.
   - Spec Kit: SPEC_KIT_ENABLED=true|false, SPEC_KIT_AI=copilot|claude|..., SPECIFY_FEATURE, SPEC_KIT_WORKDIR=/workspace/specs, SPEC_KIT_BIN (optional path; defaults to persistent `specify`).
 
 - Ports (conventions)
@@ -93,13 +90,13 @@ Derived technical requirements
 
 ## 4) Component requirements
 
-### 4.1 Backend API
+### 4.1 Orchestrator API
 
 - Functional
-  - Accept jobs/commands; return job IDs; stream logs/status via WebSocket.
+  - Report capacity (/health); list managed workloads (/pods); schedule requests (/schedule); evict (/evict); task updates (/task-update).
   - Access MCP for context retrieval and updates.
   - Route LLM calls using provider policy: local (Ollama) primary with cloud fallback.
-  - Manage agent/VM orchestration signals (dispatch, cancel, heartbeat).
+  - Manage agent/VM orchestration signals and WS log streaming.
 
 - Non-functional
   - Availability: single-instance acceptable for dev; plan horizontal scale later.
@@ -111,11 +108,9 @@ Derived technical requirements
   - CORS allow-list for http://localhost:3000 in dev; no wildcard in prod.
 
 - Interface contracts (high level)
-  - POST /v1/jobs: create job; returns {jobId}.
-  - GET /v1/jobs/{id}: status and summary.
-  - WS /v1/stream/{id}: server-to-client messages: {type, ts, payload} (types: log, status, result, error, heartbeat).
-  - GET /v1/context/search?q=...: returns ranked items; includes source, score, snippet.
-  - POST /v1/llm/infer: {model, input, params, policyOverride?}; returns streamed tokens or final text.
+  - GET /health, GET /pods, POST /schedule, POST /evict, POST /task-update
+  - WS /stream/{id}: {type, ts, payload} (log, status, result, error, heartbeat)
+  - GET /context/search?q=..., POST /llm/infer
 
 - Error taxonomy
   - 4xx: validation, auth, policy (rate limit/quota exceeded).
@@ -176,7 +171,7 @@ Derived technical requirements
 - GPU (Linux)
   - NVIDIA toolkit; verify driver/compute compatibility; limit GPU via device flags.
 
-### 4.6 Agent containers
+### 4.6 Agent workloads
 
 - Requirements
   - Non-root user; read-only root FS where possible; writable work dir for temp.
@@ -186,7 +181,7 @@ Derived technical requirements
   - Telemetry: emit structured logs/metrics (task time, tokens, provider choice, errors).
   - Spec Kit usage: when SPEC_KIT_ENABLED, agents can request orchestrator to run Spec Kit flows (/constitution, /specify, /clarify, /plan, /tasks, /implement). Outputs stored in SPEC_KIT_WORKDIR and/or committed under a feature branch when configured.
 
-### 4.7 VM containers
+### 4.7 VM workloads
 
 - macOS dev
   - QEMU-based; no KVM accel; small base images; ephemeral; lifecycle per job.
@@ -271,7 +266,8 @@ Derived technical requirements
 
 ## 8) Operational runbooks
 
-- Startup sequence: storage -> MCP -> Ollama -> backend -> agents -> VMs -> frontend.
+- Startup sequence (local): storage -> MCP -> Ollama -> backend -> agents -> VMs -> frontend.
+- Startup sequence (clustered): k8s node ready -> MCP/storage/vector -> orchestrator -> agents/VMs -> frontend.
 - Model preloading: list of model tags; verification and warm-up prompts.
 - Backup/restore (prod): DB backups; model cache restore from artifact store.
 - Incident response: degraded provider, fallback thresholds, circuit breakers.
@@ -297,6 +293,8 @@ Derived technical requirements
 - Ollama reachable; required models present; fallback to cloud works and is observable.
 - Agent completes a sample coding task; logs stream to frontend; telemetry captured.
 - VM job lifecycle validated (provision -> execute -> teardown) on macOS (QEMU) and Linux (KVM).
+- Tailscale peer discovery operational; cross-node scheduling demonstrated.
+- k3s/microk8s placement verified; logs/results streamed to requester.
 - Security checks pass: non-root containers, secrets not exposed, ports restricted.
 - Observability dashboard shows key metrics and alerts.
  - Swappability: change vector store (FAISS -> Weaviate) and LLM provider (Ollama -> cloud) via config only; no code changes.
@@ -307,7 +305,11 @@ Derived technical requirements
 ---
 
 ## 11) Non-goals (phase-1)
+---
 
+## Appendix: Local Dev (Docker)
+
+See README for local run steps. This mode uses a Dockerized backend and sibling containers for MCP/storage/vector/Ollama/agents/VMs on a private Docker network. It aligns with the per-machine orchestrator model and runs fully locally.
 - Multi-tenant RBAC beyond basic scopes.
 - Full autoscaling policies; advanced scheduling.
 - Cross-region replication and failover.

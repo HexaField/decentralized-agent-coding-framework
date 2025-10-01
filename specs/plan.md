@@ -1,17 +1,17 @@
 # Technical Implementation Plan (concise)
 
 Phases
-- M0 Foundations: container network, backend on :8080, CORS/WS OK.
-- M1 Context & Storage: MCP reachable; storage wired (SQLite/Postgres); search flow.
-- M2 Local inference: Ollama reachable; provider routing (local-first, cloud-fallback).
-- M3 Agents & VMs: 1 agent + 1 VM container integrated with job lifecycle.
-- M4 Observability & Security: logs/metrics/tracing baseline; rate limits; secrets; non-root.
-- M5 Production: reverse proxy TLS; persistence; GPU enablement; runbooks.
+- M0 Foundations: Docker backend on :8080, CORS/WS OK, MCP/storage/vector/Ollama reachable.
+- M1 Local orchestrator: capacity report, /pods, local scheduling to k3s/microk8s.
+- M2 Peer discovery & negotiation: Tailscale hostnames, scoring, /schedule across nodes.
+- M3 Kubernetes integration: remote placement; ephemeral pods for agents/VMs/code-server.
+- M4 Spec‑Kit & MCP: orchestrator updates tasks; MCP context packs; observability/security baseline.
+- M5 Production: reverse proxy TLS; persistence; GPU; ACLs; audit; runbooks.
 
 Contracts
-- REST: /health, /ready, /v1/jobs, /v1/jobs/:id, /v1/jobs/:id/cancel, /v1/context/search
-- WS: /v1/stream (status/log/result/error/heartbeat)
+- REST: /health, /schedule, /pods, /evict, /task-update, /context/search
+- WS: /stream/{id} (status/log/result/error/heartbeat)
 - OpenAPI: /openapi.json
 
 Config
-- API_PORT, CORS_ALLOWED_ORIGINS; MCP_URL, STORAGE_URL, VECTOR_DB_URL, OLLAMA_BASE_URL; PROVIDER_POLICY.
+- API_PORT, CORS_ALLOWED_ORIGINS; MCP_URL, STORAGE_URL, VECTOR_DB_URL, OLLAMA_BASE_URL; PROVIDER_POLICY; Tailscale node/ACL identifiers; k8s context.
