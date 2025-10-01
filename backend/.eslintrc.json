@@ -1,0 +1,19 @@
+{
+  "env": {
+    "es2022": true,
+  "node": true
+  },
+  "extends": [
+    "eslint:recommended"
+  ],
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "script"
+  },
+  "rules": {
+    "no-console": "off",
+    "semi": ["error", "always"],
+    "object-curly-newline": "off",
+    "object-curly-spacing": "off"
+  }
+}

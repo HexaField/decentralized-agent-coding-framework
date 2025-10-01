@@ -38,7 +38,7 @@ const server = http.createServer(app);
 
 // WebSocket for streaming job logs
 const wss = new WebSocket.Server({ server, path: '/v1/stream' });
-wss.on('connection', (ws, req) => {
+wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'status', ts: Date.now(), payload: 'connected' }));
   const interval = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -48,6 +48,10 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => clearInterval(interval));
 });
 
-server.listen(PORT, () => {
-  console.log(`orchestrator listening on :${PORT}`);
-});
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`orchestrator listening on :${PORT}`);
+  });
+}
+
+module.exports = { app, server };

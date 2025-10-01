@@ -5,9 +5,9 @@
   "description": "Minimal orchestrator API with WebSocket streaming",
   "main": "src/server.js",
   "scripts": {
-  "start": "node src/server.js",
-  "lint": "echo 'Add ESLint config' && exit 0",
-  "test": "node -e 'console.log(\"No tests yet\")'"
+    "start": "node src/server.js",
+    "lint": "eslint .",
+    "test": "vitest run --coverage --reporter=dot"
   },
   "engines": {
     "node": ">=18"
@@ -17,5 +17,18 @@
     "express": "^4.19.2",
     "morgan": "^1.10.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.10",
+    "@vitest/coverage-v8": "^2.0.5",
+  "eslint": "^8.57.0",
+    "eslint-config-standard": "^17.1.0",
+    "eslint-plugin-import": "^2.29.1",
+  "eslint-plugin-n": "^16.6.2",
+  "eslint-plugin-promise": "^6.1.1",
+  "eslint-plugin-vitest": "^0.5.4",
+    "supertest": "^7.0.0",
+    "vitest": "^2.0.5"
   }
 }
