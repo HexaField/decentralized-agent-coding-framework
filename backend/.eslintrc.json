@@ -1,11 +1,9 @@
 {
   "env": {
     "es2022": true,
-  "node": true
+    "node": true
   },
-  "extends": [
-    "eslint:recommended"
-  ],
+  "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
   "parserOptions": {
     "ecmaVersion": 2022,
     "sourceType": "script"
@@ -15,5 +13,15 @@
     "semi": ["error", "always"],
     "object-curly-newline": "off",
     "object-curly-spacing": "off"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["**/*.ts"],
+      "parser": "@typescript-eslint/parser",
+      "plugins": ["@typescript-eslint"],
+      "rules": {
+        "@typescript-eslint/no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }]
+      }
+    }
+  ]
 }
