@@ -17,7 +17,7 @@ jobs:
       - name: Install backend deps
         run: |
           cd backend
-          npm ci
+          npm i --no-audit --no-fund
       - name: Lint
         run: |
           cd backend
