@@ -67,7 +67,7 @@ Common env
 ## Spec Kit
 
 - Docs: `docs/SPEC_KIT.md`
-- Quickstart: `scripts/spec_kit_init_here.sh` (installs uvx if needed), `scripts/spec_kit_check.sh`
+- Quickstart: `scripts/spec_kit_init_here.sh` (installs persistent Specify CLI if needed), `scripts/spec_kit_check.sh`
 - Specs live in `specs/` (see `specs/system.md`)
 
 ## Contributing

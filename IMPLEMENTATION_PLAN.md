@@ -79,7 +79,7 @@ Derived technical requirements
   - Secrets: CLOUD_API_KEYS (OpenAI/Anthropic/etc.), DB credentials; inject via env or Docker secrets.
   - Frontend: API_BASE_URL (http://localhost:8080), feature flags (localLLMPreferred, enableCloudFallback).
   - Networking: PRIVATE_NETWORK_NAME (e.g., dev-mesh), SERVICE_NAMES (mcp, storage, ollama).
-  - Spec Kit: SPEC_KIT_ENABLED=true|false, SPEC_KIT_AI=copilot|claude|..., SPECIFY_FEATURE, SPEC_KIT_WORKDIR=/workspace/specs, SPEC_KIT_BIN (optional path; default uses uvx).
+  - Spec Kit: SPEC_KIT_ENABLED=true|false, SPEC_KIT_AI=copilot|claude|..., SPECIFY_FEATURE, SPEC_KIT_WORKDIR=/workspace/specs, SPEC_KIT_BIN (optional path; defaults to persistent `specify`).
 
 - Ports (conventions)
   - Backend :8080 (host-published)
@@ -220,8 +220,8 @@ Derived technical requirements
   - Persist generated artifacts to SPEC_KIT_WORKDIR (e.g., `specs/`) and synchronize with docs (`IMPLEMENTATION_PLAN.md`, `BACKLOG.md`, `README.md`) when applicable.
 
 - Invocation model
-  - Prefer uvx: `uvx --from git+https://github.com/github/spec-kit.git specify <command>`.
-  - Support persistent tool install via uv tool or a container image; discover via SPEC_KIT_BIN if set.
+  - Prefer persistent install: `uv tool install specify-cli --from git+https://github.com/github/spec-kit.git`; then use `specify <command>`.
+  - Support one-time `uvx` fallback; discover via SPEC_KIT_BIN if set.
   - Dry-run modes where supported; require a feature branch for mutating operations by default.
 
 - Contracts

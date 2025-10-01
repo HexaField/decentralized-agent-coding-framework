@@ -14,7 +14,10 @@ This repo supports Spec-Driven Development using GitHub’s Spec Kit and the `sp
 
 - Persistent install (recommended):
   - uv tool install specify-cli --from git+https://github.com/github/spec-kit.git
-- One-time usage:
+  - Ensure `$HOME/.local/bin` is on your PATH.
+  - Then run `specify --help`.
+  
+- One-time usage (not recommended for day-to-day):
   - uvx --from git+https://github.com/github/spec-kit.git specify check
 
 ## Initialize (optional)
@@ -22,9 +25,9 @@ This repo supports Spec-Driven Development using GitHub’s Spec Kit and the `sp
 Caution: init can write files. Prefer running in a feature branch.
 
 - In current directory:
-  - uvx --from git+https://github.com/github/spec-kit.git specify init . --here --ai copilot
+  - specify init . --here --ai copilot
 - With force merge if non-empty:
-  - uvx --from git+https://github.com/github/spec-kit.git specify init . --here --force --ai copilot
+  - specify init . --here --force --ai copilot
 
 ## Workflow (slash commands)
 
@@ -41,5 +44,5 @@ Caution: init can write files. Prefer running in a feature branch.
 
 ## Repo integration
 
-- Scripts: see scripts/spec_kit_check.sh and scripts/spec_kit_init_here.sh
+- Scripts: see `scripts/spec_kit_check.sh` and `scripts/spec_kit_init_here.sh` (both install the persistent CLI if missing)
 - NPM scripts: `npm run spec:check`, `npm run spec:init:here`
