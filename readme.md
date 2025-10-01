@@ -58,6 +58,11 @@ High‑level phases that map to the three parts of the system.
 - Kubernetes RBAC, NetworkPolicies, and per‑workload quotas
 - Least‑privilege, time‑bound agent credentials distinct from users
 
+## Documents
+
+- High-level requirements: `requirements.md`
+- Implementation plan (RFC 2119 + TDD/CI): `implementation-plan.md`
+
 ## Status
 
 This repository tracks the specification and implementation of the system described above. See `plan.md` for detailed goals, interfaces, and dependencies.
