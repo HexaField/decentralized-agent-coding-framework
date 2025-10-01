@@ -2,6 +2,8 @@ import http from 'node:http'
 import cors, { CorsOptions } from 'cors'
 import express, { NextFunction, Request, Response } from 'express'
 import { WebSocket, WebSocketServer } from 'ws'
+import { createOpenApiRouter } from './openapi/openapi.js'
+import { getLocalCapacity } from './orchestrator/capacity.js'
 
 // Types
 type JobStatus = 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
@@ -64,46 +66,11 @@ app.use((req, _res, next) => {
 })
 
 // Health endpoints
-app.get('/health', (_req, res) => res.json({ ok: true }))
+app.get('/health', (_req, res) => res.json({ ok: true, capacity: getLocalCapacity() }))
 app.get('/ready', (_req, res) => res.json({ ready: true }))
 
-// OpenAPI outline (minimal)
-const openapi = {
-  openapi: '3.0.3',
-  info: { title: 'Orchestrator API', version: '0.1.0' },
-  paths: {
-    '/health': { get: { summary: 'Health check' } },
-    '/ready': { get: { summary: 'Readiness check' } },
-    '/v1/jobs': {
-      post: {
-        summary: 'Create job',
-        parameters: [{ in: 'header', name: 'Idempotency-Key', schema: { type: 'string' } }]
-      }
-    },
-    '/v1/jobs/{id}': {
-      get: {
-        summary: 'Get job status',
-        parameters: [
-          {
-            in: 'path',
-            name: 'id',
-            required: true,
-            schema: { type: 'string' }
-          }
-        ]
-      }
-    },
-    '/v1/jobs/{id}/cancel': { post: { summary: 'Cancel job' } },
-    '/v1/context/search': {
-      get: {
-        summary: 'Search context',
-        parameters: [{ in: 'query', name: 'q', schema: { type: 'string' } }]
-      }
-    },
-    '/v1/stream': { get: { summary: 'WebSocket stream' } }
-  }
-}
-app.get('/openapi.json', (_req, res) => res.json(openapi))
+// OpenAPI route
+app.use(createOpenApiRouter())
 
 // Jobs API
 // Create job with optional idempotency key
