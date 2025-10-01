@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  node-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install root deps (none)
+        run: |
+          echo "No root deps"
+      - name: Install backend deps
+        run: |
+          cd backend
+          npm ci
+      - name: Lint placeholder
+        run: |
+          echo "No linter configured yet"
+      - name: Build backend (smoke)
+        run: |
+          node -e "require('fs').accessSync('backend/src/server.js')"

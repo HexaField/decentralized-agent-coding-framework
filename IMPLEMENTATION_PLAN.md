@@ -79,6 +79,7 @@ Derived technical requirements
   - Secrets: CLOUD_API_KEYS (OpenAI/Anthropic/etc.), DB credentials; inject via env or Docker secrets.
   - Frontend: API_BASE_URL (http://localhost:8080), feature flags (localLLMPreferred, enableCloudFallback).
   - Networking: PRIVATE_NETWORK_NAME (e.g., dev-mesh), SERVICE_NAMES (mcp, storage, ollama).
+  - Spec Kit: SPEC_KIT_ENABLED=true|false, SPEC_KIT_AI=copilot|claude|..., SPECIFY_FEATURE, SPEC_KIT_WORKDIR=/workspace/specs, SPEC_KIT_BIN (optional path; default uses uvx).
 
 - Ports (conventions)
   - Backend :8080 (host-published)
@@ -183,6 +184,7 @@ Derived technical requirements
   - Capabilities: file ops (bounded), tool execution (allow-listed), network egress restrictions.
   - Concurrency: worker pool size; per-task CPU/mem limits; task timeouts and cancellation.
   - Telemetry: emit structured logs/metrics (task time, tokens, provider choice, errors).
+  - Spec Kit usage: when SPEC_KIT_ENABLED, agents can request orchestrator to run Spec Kit flows (/constitution, /specify, /clarify, /plan, /tasks, /implement). Outputs stored in SPEC_KIT_WORKDIR and/or committed under a feature branch when configured.
 
 ### 4.7 VM containers
 
@@ -209,6 +211,31 @@ Derived technical requirements
 - Only backend published to host; all other services private.
 - Optionally run Ollama on host and reference host.docker.internal:11434 from containers (macOS convenience).
 - Optional Tailscale for cross-host access; restrict via ACLs.
+
+### 4.10 Spec Kit toolchain (inside orchestrator)
+
+- Responsibilities
+  - Provide a controlled interface to Spec Kit (Specify CLI) to support agentic coder workflows.
+  - Map high-level actions to CLI invocations (e.g., "run /plan" → specify /plan flow) with safe defaults.
+  - Persist generated artifacts to SPEC_KIT_WORKDIR (e.g., `specs/`) and synchronize with docs (`IMPLEMENTATION_PLAN.md`, `BACKLOG.md`, `README.md`) when applicable.
+
+- Invocation model
+  - Prefer uvx: `uvx --from git+https://github.com/github/spec-kit.git specify <command>`.
+  - Support persistent tool install via uv tool or a container image; discover via SPEC_KIT_BIN if set.
+  - Dry-run modes where supported; require a feature branch for mutating operations by default.
+
+- Contracts
+  - Orchestrator API exposes endpoints for Spec Kit operations, e.g., POST /v1/spec-kit/run { command, args, dryRun?, feature? }.
+  - Events streamed over WS with logs, prompts, and results; artifacts paths reported.
+  - Rate limits and concurrency controls to avoid overlapping mutating runs.
+
+- Storage and SCM
+  - Write outputs under SPEC_KIT_WORKDIR; avoid modifying unrelated files.
+  - Optional git integration: create feature branches, commit artifacts, and open PRs (future).
+
+- Observability
+  - Metrics: spec_kit_runs_total, spec_kit_failures_total, spec_kit_duration_ms, by command.
+  - Logs: provider/AI used, command, args, artifact paths, dry-run vs live.
 
 ---
 
@@ -238,6 +265,7 @@ Derived technical requirements
 - Load tests: LLM throughput/latency under concurrent jobs; provider fallback behavior.
 - Chaos/failure injection: kill agent/VM containers; simulate provider outages and ensure fallback.
 - Security tests: authZ checks, rate limit enforcement, tool sandbox bypass attempts.
+ - Spec Kit tests: mock SPEC_KIT_BIN to a no-op script; validate orchestrator endpoints (/v1/spec-kit/run) and artifact emission under SPEC_KIT_WORKDIR; concurrency and rate limit behavior.
 
 ---
 
@@ -248,6 +276,7 @@ Derived technical requirements
 - Backup/restore (prod): DB backups; model cache restore from artifact store.
 - Incident response: degraded provider, fallback thresholds, circuit breakers.
 - Scaling guidance: backend horizontal scale, agent pool sizing, VM fleet capacity.
+ - Spec Kit operations: enable/disable via SPEC_KIT_ENABLED; rotate AI/tool tokens; safe-init procedures (feature branch); cleanup artifacts and rollback.
 
 ---
 
@@ -257,6 +286,7 @@ Derived technical requirements
 - Persistent volumes for DB and model cache; image pinning and SBOM tracking.
 - GPU enablement on Linux; version pinning for drivers/toolkit.
 - Access control: IP allow-lists, Tailscale ACLs; rotate keys; audit reviews.
+ - Spec Kit execution sandbox: strict allow-list on commands, working directory jail, redaction of secrets from logs, resource/time limits for CLI runs.
 
 ---
 
@@ -272,6 +302,7 @@ Derived technical requirements
  - Swappability: change vector store (FAISS -> Weaviate) and LLM provider (Ollama -> cloud) via config only; no code changes.
  - DI fidelity: unit tests pass with in-memory fakes; prod runs with real providers using same interfaces.
  - Interop: context data export/import succeeds; provider errors map to shared taxonomy.
+ - Spec Kit: orchestrator can run a dry-run /plan and /tasks producing artifacts in SPEC_KIT_WORKDIR, with metrics and logs recorded; mutating runs require a feature branch or explicit override.
 
 ---
 

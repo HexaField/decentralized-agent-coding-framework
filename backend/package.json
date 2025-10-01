@@ -5,7 +5,9 @@
   "description": "Minimal orchestrator API with WebSocket streaming",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+  "start": "node src/server.js",
+  "lint": "echo 'Add ESLint config' && exit 0",
+  "test": "node -e 'console.log(\"No tests yet\")'"
   },
   "engines": {
     "node": ">=18"

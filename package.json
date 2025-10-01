@@ -13,6 +13,8 @@
     "build:orchestrator": "zsh ./scripts/build_orchestrator.sh",
     "build:orchestrator:latest": "zsh ./scripts/build_orchestrator.sh latest",
     "run:orchestrator": "docker run --rm -p 8080:8080 -e CORS_ALLOWED_ORIGINS=http://localhost:3000 orchestrator-backend:latest",
-    "start:orchestrator:local": "API_PORT=8080 CORS_ALLOWED_ORIGINS=http://localhost:3000 node backend/src/server.js"
+    "start:orchestrator:local": "API_PORT=8080 CORS_ALLOWED_ORIGINS=http://localhost:3000 node backend/src/server.js",
+    "spec:check": "zsh ./scripts/spec_kit_check.sh",
+    "spec:init:here": "zsh ./scripts/spec_kit_init_here.sh"
   }
 }
