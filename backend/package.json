@@ -1,0 +1,19 @@
+{
+  "name": "orchestrator-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal orchestrator API with WebSocket streaming",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "morgan": "^1.10.0",
+    "ws": "^8.18.0"
+  }
+}
