@@ -9,8 +9,8 @@
     "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
     "rootDir": "server",
-    "types": ["node"]
+    "types": ["node", "vitest/globals"]
   },
-  "include": ["server/**/*.ts"],
+  "include": ["server/**/*.ts", "server/**/*.test.ts"],
   "exclude": ["node_modules", "dist"]
 }

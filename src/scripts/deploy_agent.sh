@@ -14,6 +14,9 @@ sed -i "s#server: https://0\\.0\\.0\\.0:#server: https://${K3D_API_HOST}:#" "$TM
 sed -i "s#server: https://127\\.0\\.0\\.1:#server: https://${K3D_API_HOST}:#" "$TMP_KUBECONFIG" || true
 export KUBECONFIG="$TMP_KUBECONFIG"
 
+# In dev, the API cert SANs won't match host.docker.internal; relax verification
+sed -i 's#^\([[:space:]]*\)certificate-authority-data:.*#\1insecure-skip-tls-verify: true#' "$TMP_KUBECONFIG" || true
+
 # Fast preflight to fail early if API is unreachable
 kubectl version --request-timeout=5s >/dev/null
 AGENT_NAME="agent-$(date +%s)"

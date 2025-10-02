@@ -20,6 +20,7 @@
     "prettier": "^3.3.3",
     "solid-js": "^1.8.22",
     "supertest": "^7.0.0",
+    "@types/supertest": "^2.0.16",
     "tailwindcss": "^3.4.12",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
