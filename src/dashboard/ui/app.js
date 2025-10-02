@@ -5,13 +5,19 @@ async function main(){
   document.getElementById('tasks').textContent = JSON.stringify(s.tasks||[], null, 2)
   const pr = (s.prs && s.prs[0]) || null
   document.getElementById('pr').innerHTML = pr ? `<a href="${pr.url}" target="_blank">${pr.url}</a>` : '—'
-  if(s.agents){
+  if(Array.isArray(s.agents)){
     let a = document.getElementById('agents')
     if(!a){
       const h2 = document.createElement('h2'); h2.textContent = 'Agents'; document.body.appendChild(h2)
-      a = document.createElement('pre'); a.id='agents'; document.body.appendChild(a)
+      a = document.createElement('div'); a.id='agents'; document.body.appendChild(a)
     }
-    a.textContent = JSON.stringify(s.agents, null, 2)
+    // render agents JSON and quick hint
+    const pre = document.createElement('pre')
+    pre.textContent = JSON.stringify(s.agents, null, 2)
+    const tip = document.createElement('div')
+    tip.style.marginTop = '0.5rem'
+    tip.innerHTML = `Tip: to open an agent's editor, port-forward with <code>./src/scripts/open_code_server.sh &lt;org&gt; &lt;agent-service-name&gt;</code> and browse <code>http://127.0.0.1:8443</code> (default password: <code>password</code>).`
+    a.replaceChildren(pre, tip)
   }
 }
 document.getElementById('run').onclick = async ()=>{
