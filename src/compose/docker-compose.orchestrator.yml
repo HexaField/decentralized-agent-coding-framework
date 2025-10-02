@@ -22,7 +22,7 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: /app
-  command: ["sh", "-lc", "npm install --omit=dev && node server/server.js"]
+  command: ["sh", "-lc", "npm install --omit=dev && npx tsx server/server.ts"]
     environment:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
       - ORCHESTRATOR_URL=http://mvp-orchestrator:8080

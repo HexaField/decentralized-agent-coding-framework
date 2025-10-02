@@ -1,152 +1,129 @@
-async function main(){
-  const h = await fetch('/api/health').then(r=>r.json())
-  document.getElementById('health').textContent = JSON.stringify(h)
-  const s = await fetch('/api/state').then(r=>r.json()).catch(()=>({tasks:[],prs:[]}))
-  document.getElementById('tasks').textContent = JSON.stringify(s.tasks||[], null, 2)
-  const pr = (s.prs && s.prs[0]) || null
-  document.getElementById('pr').innerHTML = pr ? `<a href="${pr.url}" target="_blank">${pr.url}</a>` : '—'
-  renderAgentsTabs(s.agents||[])
-}
-document.getElementById('run').onclick = async ()=>{
-  const q = document.getElementById('cmd').value
-  const res = await fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json','x-auth-token':(window.DASHBOARD_TOKEN||'dashboard-secret')}, body: JSON.stringify({q})}).then(r=>r.json())
-  document.getElementById('out').textContent = JSON.stringify(res,null,2)
-}
-document.getElementById('refresh').onclick = main
-document.getElementById('schedule').onclick = async ()=>{
-  const org = document.getElementById('org').value.trim()
-  const task = document.getElementById('task').value.trim()
-  const res = await fetch('/api/schedule', {method:'POST', headers:{'Content-Type':'application/json','x-auth-token':(window.DASHBOARD_TOKEN||'dashboard-secret')}, body: JSON.stringify({org, task})}).then(r=>r.json())
-  document.getElementById('scheduleOut').textContent = JSON.stringify(res, null, 2)
-  await main()
-}
+// Simplified dashboard UI logic: org chat (LLM), expandable tasks, expandable agents with editor open
 
-// Embed controls
 const embedFrame = document.getElementById('embedFrame')
-document.getElementById('embedLoad').onclick = ()=>{
-  const p = document.getElementById('embedPort').value.trim()
-  if(!p){ document.getElementById('embedStatus').textContent = 'Enter a local port'; return }
-  embedFrame.src = `/embed/local/${encodeURIComponent(p)}/`
-}
-document.getElementById('embedPing').onclick = async ()=>{
-  const p = document.getElementById('embedPort').value.trim()
-  if(!p){ document.getElementById('embedStatus').textContent = 'Enter a local port'; return }
-  const r = await fetch(`/api/embed/ping/${encodeURIComponent(p)}`).then(r=>r.json()).catch(e=>({error:String(e)}))
-  document.getElementById('embedStatus').textContent = JSON.stringify(r, null, 2)
-}
 
-// Agents tabs + logs + invoke
-let activeAgent = null
-let activeTaskId = null
 let refreshTimer = null
-let agentES = null
-let taskES = null
+const expandedTasks = new Set()
+const expandedAgents = new Set()
+const taskStreams = new Map() // id -> EventSource
+const agentStreams = new Map() // name -> EventSource
 
-function renderAgentsTabs(agents){
-  const tabs = document.getElementById('agentsTabs')
-  tabs.textContent = ''
-  agents.forEach(a=>{
-    const btn = document.createElement('button')
-    btn.textContent = `${a.name||a.Name||'agent'} (${a.status||a.Status||'?'})`
-    btn.onclick = ()=>{ 
-      activeAgent = a.name||a.Name; 
-      if(taskES){ taskES.close(); taskES=null }
-      activeTaskId = null; 
-      loadAgentLogs(); 
+async function loadState(){
+  const h = await fetch('/api/health').then(r=>r.json()).catch(()=>({status:'error'}))
+  document.getElementById('health').textContent = JSON.stringify(h)
+  const s = await fetch('/api/state').then(r=>r.json()).catch(()=>({tasks:[],agents:[]}))
+  renderTasks(s.tasks||[])
+  renderAgents(s.agents||[])
+}
+
+function renderTasks(tasks){
+  const root = document.getElementById('tasksList')
+  root.textContent = ''
+  tasks.forEach(t=>{
+    const id = t.id || t.ID || t.Id
+    const status = t.status || t.Status || 'unknown'
+    const text = t.text || t.Text || ''
+    const el = document.createElement('div')
+    const header = document.createElement('div')
+    header.className = 'item-header'
+    header.textContent = `[${id}] ${status} — ${text}`
+    const body = document.createElement('div')
+    body.style.display = expandedTasks.has(id) ? 'block' : 'none'
+    const pre = document.createElement('pre')
+    pre.style.height = '160px'; pre.style.overflow = 'auto'
+    pre.id = `taskLog-${id}`
+    body.appendChild(pre)
+    header.onclick = async ()=>{
+      if(expandedTasks.has(id)){
+        expandedTasks.delete(id)
+        body.style.display = 'none'
+        const es = taskStreams.get(id); if(es){ es.close(); taskStreams.delete(id) }
+      } else {
+        expandedTasks.add(id)
+        body.style.display = 'block'
+        await startTaskStream(id, pre)
+      }
     }
-    tabs.appendChild(btn)
+    el.appendChild(header); el.appendChild(body)
+    root.appendChild(el)
   })
-  if(activeAgent && !agents.find(a=> (a.name||a.Name) === activeAgent)) activeAgent = null
-  if(!refreshTimer){ refreshTimer = setInterval(tick, 4000) }
 }
 
-async function tick(){
-  // lightweight state refresh; logs are streamed via SSE
-  const s = await fetch('/api/state').then(r=>r.json()).catch(()=>({tasks:[],agents:[],prs:[]}))
-  document.getElementById('tasks').textContent = JSON.stringify(s.tasks||[], null, 2)
-  renderAgentsTabs(s.agents||[])
-}
-
-async function loadAgentLogs(){
-  const name = activeAgent; if(!name) return
-  if(agentES){ agentES.close(); agentES=null }
-  const pre = document.getElementById('agentLogs')
-  pre.textContent = ''
-  const out = await fetch(`/api/agentLogs?name=${encodeURIComponent(name)}`).then(r=>r.json()).catch(()=>({lines:[]}))
-  pre.textContent = (out.lines||[]).join('\n')
-  pre.scrollTop = pre.scrollHeight
-  agentES = new EventSource(`/api/stream/agent?name=${encodeURIComponent(name)}`)
-  agentES.onmessage = (e)=>{
-    pre.textContent += (pre.textContent? '\n':'') + e.data
-    pre.scrollTop = pre.scrollHeight
-  }
-}
-
-async function loadTaskLogs(id){
-  if(taskES){ taskES.close(); taskES=null }
-  const pre = document.getElementById('taskLogs')
+async function startTaskStream(id, pre){
   pre.textContent = ''
   const out = await fetch(`/api/taskLogs?id=${encodeURIComponent(id)}`).then(r=>r.json()).catch(()=>({lines:[]}))
-  pre.textContent = (out.lines||[]).join('\n')
-  pre.scrollTop = pre.scrollHeight
-  taskES = new EventSource(`/api/stream/task?id=${encodeURIComponent(id)}`)
-  taskES.onmessage = (e)=>{
-    pre.textContent += (pre.textContent? '\n':'') + e.data
-    pre.scrollTop = pre.scrollHeight
-  }
+  pre.textContent = (out.lines||[]).join('\n'); pre.scrollTop = pre.scrollHeight
+  let es = taskStreams.get(id); if(es){ es.close() }
+  es = new EventSource(`/api/stream/task?id=${encodeURIComponent(id)}`)
+  es.onmessage = (e)=>{ pre.textContent += (pre.textContent?'\n':'') + e.data; pre.scrollTop = pre.scrollHeight }
+  es.onerror = ()=>{ es.close(); taskStreams.delete(id) }
+  taskStreams.set(id, es)
 }
 
-document.getElementById('agentInvoke').onclick = async ()=>{
-  const name = activeAgent
-  const org = document.getElementById('org').value.trim() || 'acme'
-  const prompt = document.getElementById('agentPrompt').value.trim()
-  if(!name || !prompt){ alert('Select an agent and enter a prompt'); return }
-  const res = await fetch('/api/schedule', {method:'POST', headers:{'Content-Type':'application/json','x-auth-token':(window.DASHBOARD_TOKEN||'dashboard-secret')}, body: JSON.stringify({org, task: prompt, agentHint: name})}).then(r=>r.json())
-  document.getElementById('scheduleOut').textContent = JSON.stringify(res,null,2)
-  activeTaskId = res.id || null
-  if(activeTaskId){ loadTaskLogs(activeTaskId) }
+function renderAgents(agents){
+  const root = document.getElementById('agentsList')
+  root.textContent = ''
+  agents.forEach(a=>{
+    const name = a.name || a.Name
+    const status = a.status || a.Status || 'unknown'
+    const el = document.createElement('div')
+    const header = document.createElement('div')
+    header.className = 'item-header'
+    header.textContent = `${name} — ${status}`
+    const body = document.createElement('div')
+    body.style.display = expandedAgents.has(name) ? 'block' : 'none'
+    const ctrl = document.createElement('div')
+    ctrl.className = 'row'
+    const port = document.createElement('input'); port.placeholder = 'local port (e.g., 8450)'
+    const btn = document.createElement('button'); btn.textContent = 'Open Editor'
+    btn.onclick = ()=>{ const p = port.value.trim(); if(!p) return; embedFrame.src = `/embed/local/${encodeURIComponent(p)}/` }
+    ctrl.appendChild(port); ctrl.appendChild(btn)
+    const pre = document.createElement('pre'); pre.style.height='160px'; pre.style.overflow='auto'; pre.id=`agentLog-${name}`
+    body.appendChild(ctrl); body.appendChild(pre)
+    header.onclick = async ()=>{
+      if(expandedAgents.has(name)){
+        expandedAgents.delete(name); body.style.display='none'
+        const es = agentStreams.get(name); if(es){ es.close(); agentStreams.delete(name) }
+      } else {
+        expandedAgents.add(name); body.style.display='block'
+        await startAgentStream(name, pre)
+      }
+    }
+    el.appendChild(header); el.appendChild(body); root.appendChild(el)
+  })
 }
 
-// Global chat
-async function refreshGlobalChat(){
-  const data = await fetch('/api/chat').then(r=>r.json()).catch(()=>({messages:[]}))
-  const lines = (data.messages||[]).map(m=>`[${m.role}] ${m.text}`)
-  document.getElementById('globalChat').textContent = lines.join('\n')
+async function startAgentStream(name, pre){
+  pre.textContent = ''
+  const out = await fetch(`/api/agentLogs?name=${encodeURIComponent(name)}`).then(r=>r.json()).catch(()=>({lines:[]}))
+  pre.textContent = (out.lines||[]).join('\n'); pre.scrollTop = pre.scrollHeight
+  let es = agentStreams.get(name); if(es){ es.close() }
+  es = new EventSource(`/api/stream/agent?name=${encodeURIComponent(name)}`)
+  es.onmessage = (e)=>{ pre.textContent += (pre.textContent?'\n':'') + e.data; pre.scrollTop = pre.scrollHeight }
+  es.onerror = ()=>{ es.close(); agentStreams.delete(name) }
+  agentStreams.set(name, es)
 }
-document.getElementById('globalChatSend').onclick = async ()=>{
-  const text = document.getElementById('globalChatInput').value.trim()
-  const org = document.getElementById('org').value.trim() || 'acme'
-  if(!text) return
-  const res = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json','x-auth-token':(window.DASHBOARD_TOKEN||'dashboard-secret')}, body: JSON.stringify({org, text})}).then(r=>r.json()).catch(e=>({error:String(e)}))
-  document.getElementById('scheduleOut').textContent = JSON.stringify(res,null,2)
-  await refreshGlobalChat(); await main()
-}
-setInterval(refreshGlobalChat, 3000)
-document.getElementById('globalChatStream').onclick = async ()=>{
-  const input = document.getElementById('globalChatInput')
+
+// Org chat streaming
+document.getElementById('chatAsk').onclick = async ()=>{
+  const input = document.getElementById('chatInput')
   const text = input.value.trim()
   const org = document.getElementById('org').value.trim() || 'acme'
   if(!text) return
-  const pre = document.getElementById('globalChat')
+  const pre = document.getElementById('chatLog')
   pre.textContent += (pre.textContent? '\n':'') + `[user] ${text}`
-  input.value = ''
+  input.value=''
   const es = new EventSource(`/api/chat/stream?org=${encodeURIComponent(org)}&text=${encodeURIComponent(text)}`)
-  es.addEventListener('message', (e)=>{
-    pre.textContent += `\n[assistant] ${e.data}`
-    pre.scrollTop = pre.scrollHeight
+  es.addEventListener('message', (e)=>{ pre.textContent += `\n[assistant] ${e.data}`; pre.scrollTop = pre.scrollHeight })
+  es.addEventListener('task', (e)=>{ 
+    try{ const info = JSON.parse(e.data); pre.textContent += `\n[system] scheduled task ${info.id||''}` }
+    catch(_){ pre.textContent += `\n[system] ${e.data}` }
+    pre.scrollTop = pre.scrollHeight 
   })
-  es.addEventListener('task', (e)=>{
-    try{
-      const info = JSON.parse(e.data)
-      pre.textContent += `\n[system] scheduled task ${info.id||''}`
-    }catch(_){ pre.textContent += `\n[system] ${e.data}` }
-    pre.scrollTop = pre.scrollHeight
-  })
-  es.addEventListener('error', (e)=>{
-    pre.textContent += `\n[error] streaming failed`
-    pre.scrollTop = pre.scrollHeight
-  })
-  es.addEventListener('done', ()=>{ es.close(); refreshGlobalChat(); main() })
+  es.addEventListener('done', ()=>{ es.close(); loadState() })
+  es.addEventListener('error', ()=>{ es.close() })
 }
-window.addEventListener('beforeunload', ()=>{ if(agentES) agentES.close(); if(taskES) taskES.close(); })
+
+async function main(){ await loadState(); if(!refreshTimer){ refreshTimer = setInterval(loadState, 4000) } }
+window.addEventListener('beforeunload', ()=>{ taskStreams.forEach(es=>es.close()); agentStreams.forEach(es=>es.close()) })
 main()

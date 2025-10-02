@@ -8,47 +8,20 @@
   <body>
     <h1>MVP Dashboard</h1>
   <div id="health">Loading…</div>
-  <button id="refresh">Refresh</button>
-    <input id="cmd" placeholder="AI command bar" />
-    <button id="run">Run</button>
-    <pre id="out"></pre>
-    <h2>Schedule</h2>
-    <div class="row">
-      <input id="org" placeholder="org (e.g., acme)" />
-      <input id="task" placeholder="task text" />
-      <button id="schedule">Schedule</button>
-    </div>
-    <pre id="scheduleOut"></pre>
-  <h2>Tasks</h2>
-  <pre id="tasks"></pre>
-  <h2>Latest PR</h2>
-  <div id="pr"></div>
-  <h2>Agents</h2>
-  <div id="agentsTabs" class="tabs"></div>
-  <div id="agentPanel">
-    <h3>Global Chat</h3>
-    <div class="row">
-      <input id="globalChatInput" placeholder="Describe your goal or task…" style="width:70%" />
-  <button id="globalChatSend">Send (schedule)</button>
-  <button id="globalChatStream">Ask (LLM)</button>
-    </div>
-    <pre id="globalChat" style="height:150px;overflow:auto"></pre>
-    <div class="row">
-      <input id="agentPrompt" placeholder="Prompt to run on this agent" style="width:70%" />
-      <button id="agentInvoke">Invoke</button>
-    </div>
-    <h3>Agent Logs</h3>
-    <pre id="agentLogs" style="height:200px;overflow:auto"></pre>
-    <h3>Task Logs</h3>
-    <pre id="taskLogs" style="height:200px;overflow:auto"></pre>
-  </div>
-  <h2>Embed Agent Editor</h2>
   <div class="row">
-    <input id="embedPort" placeholder="local forward port (e.g., 8450)" />
-    <button id="embedLoad">Load in iframe</button>
-    <button id="embedPing">Ping</button>
+    <input id="org" placeholder="org (e.g., acme)" />
   </div>
-  <div id="embedStatus"></div>
+  <h2>Org Chat</h2>
+  <div class="row">
+    <input id="chatInput" placeholder="Describe your goal…" style="width:70%" />
+    <button id="chatAsk">Ask (LLM)</button>
+  </div>
+  <pre id="chatLog" style="height:180px;overflow:auto"></pre>
+  <h2>Tasks</h2>
+  <div id="tasksList"></div>
+  <h2>Agents</h2>
+  <div id="agentsList"></div>
+  <h2>Editor</h2>
   <iframe id="embedFrame" style="width:100%;height:70vh;border:1px solid #ccc" src="about:blank"></iframe>
     <script src="app.js"></script>
   </body>
