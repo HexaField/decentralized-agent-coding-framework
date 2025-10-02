@@ -4,6 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MVP Dashboard</title>
+    <script>
+      // Apply theme early to avoid FOUC
+      (function () {
+        try {
+          var stored = localStorage.getItem('theme');
+          var systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var useDark = stored === 'dark' || (!stored || stored === 'system') && systemDark;
+          var root = document.documentElement; // <html>
+          if (useDark) root.classList.add('dark'); else root.classList.remove('dark');
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -5,6 +5,7 @@ module.exports = {
     path.join(__dirname, 'index.html'),
     path.join(__dirname, 'src/**/*.{ts,tsx}')
   ],
+  darkMode: 'class',
   theme: { extend: {} },
   plugins: [],
 }
