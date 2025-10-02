@@ -581,8 +581,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         const orchBase = ORCH_URL.replace(/\/$/, '')
         const target = `${orchBase}/editor/proxy/${port}`
         {
+          const wsOrigin = `http://127.0.0.1:${port}`
           const hdrs: any = Object.assign(
-            { [CS_AUTH_HEADER]: CS_AUTH_TOKEN, origin: target },
+            { [CS_AUTH_HEADER]: CS_AUTH_TOKEN, origin: wsOrigin },
             ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
           )
           try {
