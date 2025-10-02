@@ -16,13 +16,41 @@ const ORCH_URL = process.env.ORCHESTRATOR_URL || 'http://mvp-orchestrator:8080'
 const ORCH_TOKEN = process.env.ORCHESTRATOR_TOKEN || process.env.DASHBOARD_TOKEN || ''
 const LOCAL_ENSURE = process.env.LOCAL_ENSURE === '1'
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true })
+// Optional auth header for agent fallback HTTP server; harmless for code-server
+const CS_AUTH_HEADER = process.env.CODE_SERVER_AUTH_HEADER || 'X-Agent-Auth'
+const CS_AUTH_TOKEN = process.env.CODE_SERVER_TOKEN || 'password'
 
 // Relax frame embedding for proxied responses
-proxy.on('proxyRes', (proxyRes, req, res) => {
+proxy.on('proxyRes', (proxyRes, req: any, res) => {
   try {
     delete (proxyRes as any).headers['x-frame-options']
     delete (proxyRes as any).headers['content-security-policy']
     res.setHeader('X-Frame-Options', 'ALLOWALL')
+    // If this is an embed request, rewrite redirects and cookie paths to stay under the embed base
+    const base: string | undefined = req && req._embedBase
+    if (base) {
+      const headers: any = (proxyRes as any).headers || {}
+      const loc = headers['location'] || headers['Location']
+      if (typeof loc === 'string' && loc) {
+        try {
+          let newLoc = loc
+          if (loc.startsWith('/')) {
+            newLoc = base + loc
+          } else {
+            const u = new URL(loc)
+            // strip scheme+host and keep pathname+search
+            newLoc = base + u.pathname + (u.search || '')
+          }
+          headers['location'] = newLoc
+        } catch {}
+      }
+      const setCookie = headers['set-cookie'] || headers['Set-Cookie']
+      if (setCookie) {
+        const arr = Array.isArray(setCookie) ? setCookie : [String(setCookie)]
+        const rewritten = arr.map((c: string) => c.replace(/Path=\//i, `Path=${base}/`))
+        headers['set-cookie'] = rewritten
+      }
+    }
   } catch {}
 })
 proxy.on('error', (err, req, res: any) => {
@@ -141,7 +169,33 @@ app.use('/embed/local/:port', (req, res) => {
   // rewrite path: /embed/local/:port/(.*) -> /$1
   const rest = req.url.replace(/^\/embed\/local\/\d+/, '') || '/'
   ;(req as any).url = rest
-  proxy.web(req, res, { target, changeOrigin: true, xfwd: true, headers: { origin: target } })
+  ;(req as any)._embedBase = `/embed/local/${port}`
+  proxy.web(req, res, {
+    target,
+    changeOrigin: true,
+    xfwd: true,
+    headers: { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
+  })
+})
+
+// Reverse proxy to embed editors forwarded inside orchestrator container
+app.use('/embed/orchestrator/:port', (req, res) => {
+  const port = Number(req.params.port)
+  if (!port || Number.isNaN(port)) return res.status(400).end('bad port')
+  const orchBase = ORCH_URL.replace(/\/$/, '')
+  const target = `${orchBase}/editor/proxy/${port}`
+  const rest = req.url.replace(/^\/embed\/orchestrator\/(\d+)/, '') || '/'
+  ;(req as any).url = rest
+  ;(req as any)._embedBase = `/embed/orchestrator/${port}`
+  proxy.web(req, res, {
+    target,
+    changeOrigin: true,
+    xfwd: true,
+    headers: Object.assign(
+      { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
+      ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    ),
+  })
 })
 
 app.use((req, res, next) => {
@@ -149,7 +203,9 @@ app.use((req, res, next) => {
   if (!safe) {
     if (
       process.env.NODE_ENV !== 'production' &&
-      (req.path.startsWith('/api/debug') || req.path.startsWith('/api/ensure'))
+      (req.path.startsWith('/api/debug') ||
+        req.path.startsWith('/api/ensure') ||
+        req.path.startsWith('/api/editor'))
     ) {
       return next()
     }
@@ -188,10 +244,10 @@ async function ensureAgent(org: string, prompt: string) {
   if (LOCAL_ENSURE) {
     const deploy = path.resolve(here, '..', '..', 'scripts', 'deploy_agent.sh')
     return new Promise((resolve, reject) => {
-    execFile('bash', [deploy, org, prompt], { env: process.env }, (err, stdout, stderr) => {
+      execFile('bash', [deploy, org, prompt], { env: process.env }, (err, stdout, stderr) => {
         if (err) return reject(new Error((stdout || '') + (stderr || '') || String(err)))
         resolve({ ok: true, output: String(stdout), mode: 'k3d' })
-    })
+      })
     })
   }
   const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
@@ -207,6 +263,39 @@ app.post('/api/ensure', async (req, res) => {
     res.json({ ok: true, ensure: out })
   } catch (e) {
     res.status(502).json({ ok: false, error: String(e) })
+  }
+})
+
+// Editor control: proxy to orchestrator endpoints
+app.post('/api/editor/open', async (req, res) => {
+  try {
+    const name = (req.body && req.body.name) || ''
+    const org = (req.body && req.body.org) || ''
+    if (!name) return res.status(400).json({ error: 'missing name' })
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/agents/editor/open`, {
+      method: 'POST',
+      headers,
+      body: { name, org },
+    })
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
+  }
+})
+app.post('/api/editor/close', async (req, res) => {
+  try {
+    const name = (req.body && req.body.name) || ''
+    if (!name) return res.status(400).json({ error: 'missing name' })
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/agents/editor/close`, {
+      method: 'POST',
+      headers,
+      body: { name },
+    })
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
   }
 })
 
@@ -446,7 +535,25 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           target,
           changeOrigin: true,
           xfwd: true,
-          headers: { origin: target },
+          headers: { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
+        })
+        return
+      }
+      const m2 = url.pathname.match(/^\/embed\/orchestrator\/(\d+)(\/.*)?$/)
+      if (m2) {
+        const port = Number(m2[1])
+        const rest = m2[2] || '/'
+        req.url = rest
+        const orchBase = ORCH_URL.replace(/\/$/, '')
+        const target = `${orchBase}/editor/proxy/${port}`
+        proxy.ws(req, socket, head, {
+          target,
+          changeOrigin: true,
+          xfwd: true,
+          headers: Object.assign(
+            { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
+            ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+          ),
         })
         return
       }

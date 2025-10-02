@@ -1,13 +1,19 @@
 package main
 
 import (
+    "fmt"
     "encoding/json"
     "errors"
     "io"
     "log"
+    "net"
     "net/http"
+    "net/http/httputil"
+    "net/url"
     "os"
     "os/exec"
+    "regexp"
+    "strings"
     "sync"
     "time"
 )
@@ -33,6 +39,8 @@ type Agent struct {
     Labels map[string]string `json:"labels,omitempty"`
     Status string            `json:"status"`
     LastSeen time.Time       `json:"lastSeen"`
+    EditorPort int           `json:"editorPort,omitempty"`
+    EditorVia  string        `json:"editorVia,omitempty"`
 }
 
 var (
@@ -53,7 +61,180 @@ var (
     taskSubs   = make(map[string]map[chan string]struct{}) // id -> set of channels
     agentSubsMu sync.Mutex
     agentSubs   = make(map[string]map[chan string]struct{}) // name -> set of channels
+    // editor port-forwards per agent
+    editorMu sync.Mutex
+    editorPF = make(map[string]*portFwd)
 )
+
+type portFwd struct {
+    Port int
+    Cmd  *exec.Cmd
+}
+
+// try to find a free port in a small range
+func pickPort() int {
+    // prefer 10080..10150 to avoid common local ports
+    for p := 10080; p <= 10150; p++ {
+        ln, err := net.Listen("tcp", ":"+itoa(p))
+        if err == nil {
+            ln.Close()
+            return p
+        }
+    }
+    // fallback: random by asking OS
+    ln, err := net.Listen("tcp", ":0")
+    if err != nil { return 0 }
+    addr := ln.Addr().(*net.TCPAddr)
+    port := addr.Port
+    ln.Close()
+    return port
+}
+
+// small helper for int->string
+func itoa(i int) string { return fmt.Sprintf("%d", i) }
+
+// ensureEditorForward starts (or returns) a kubectl port-forward to the agent's Service
+func ensureEditorForward(name, org string) (int, error) {
+    svcName := deriveServiceName(name)
+    editorMu.Lock()
+    if pf, ok := editorPF[name]; ok {
+        port := pf.Port
+        cmd := pf.Cmd
+        editorMu.Unlock()
+        // Validate the forward is still accepting connections; if not, restart it
+        conn, err := net.DialTimeout("tcp", "127.0.0.1:"+itoa(port), 200*time.Millisecond)
+        if err == nil {
+            conn.Close()
+            return port, nil
+        }
+        // kill stale forward and clear mapping
+        if cmd != nil && cmd.Process != nil {
+            _ = cmd.Process.Kill()
+        }
+        editorMu.Lock()
+        delete(editorPF, name)
+        if a, ok := agents[name]; ok {
+            a.EditorPort = 0
+            a.EditorVia = ""
+            agents[name] = a
+        }
+        editorMu.Unlock()
+    }
+    editorMu.Unlock()
+
+    // try a few ports until one binds and is ready
+    for attempt := 0; attempt < 8; attempt++ {
+        port := pickPort()
+        if port == 0 { return 0, fmt.Errorf("no free port") }
+        log.Printf("opening editor forward for %s via svc/%s on :%d", name, svcName, port)
+        args := []string{"-n", "mvp-agents", "port-forward", "svc/"+svcName, itoa(port)+":8443", "--address=0.0.0.0"}
+        cmd := exec.Command("kubectl", args...)
+        // capture stderr for diagnostics
+        stderr, _ := cmd.StderrPipe()
+        // If org provided, resolve kubeconfig via k3d and set env for kubectl
+        if org != "" {
+            out, err := exec.Command("k3d", "kubeconfig", "write", "org-"+org).Output()
+            if err == nil {
+                kube := strings.TrimSpace(string(out))
+                // rewrite kubeconfig to use host.docker.internal and skip TLS verify (like deploy script)
+                if b, rerr := os.ReadFile(kube); rerr == nil {
+                    s := string(b)
+                    s = strings.ReplaceAll(s, "https://0.0.0.0:", "https://host.docker.internal:")
+                    s = strings.ReplaceAll(s, "https://127.0.0.1:", "https://host.docker.internal:")
+                    var lines []string
+                    for _, ln := range strings.Split(s, "\n") {
+                        if strings.Contains(ln, "certificate-authority-data:") {
+                            pref := ln[:strings.Index(ln, "certificate-authority-data:")]
+                            ln = pref + "insecure-skip-tls-verify: true"
+                        }
+                        lines = append(lines, ln)
+                    }
+                    _ = os.WriteFile(kube, []byte(strings.Join(lines, "\n")), 0644)
+                }
+                cmd.Env = append(os.Environ(), "KUBECONFIG="+kube)
+            }
+        }
+        if err := cmd.Start(); err != nil {
+            log.Printf("port-forward start error: %v", err)
+            continue
+        }
+        go func() { io.Copy(os.Stdout, stderr) }()
+        // wait up to ~3s for the local port to accept connects
+        ready := false
+        for i := 0; i < 30; i++ {
+            conn, err := net.DialTimeout("tcp", "127.0.0.1:"+itoa(port), 100*time.Millisecond)
+            if err == nil {
+                conn.Close(); ready = true; break
+            }
+            time.Sleep(100 * time.Millisecond)
+        }
+        if !ready {
+            _ = cmd.Process.Kill()
+            log.Printf("port-forward not ready on :%d; retrying", port)
+            continue
+        }
+        // success; record mapping
+        editorMu.Lock()
+        editorPF[name] = &portFwd{Port: port, Cmd: cmd}
+        if a, ok := agents[name]; ok {
+            a.EditorPort = port
+            a.EditorVia = "orchestrator"
+            agents[name] = a
+        }
+        editorMu.Unlock()
+        go func(n string, c *exec.Cmd) {
+            _ = c.Wait()
+            editorMu.Lock()
+            if pf, ok := editorPF[n]; ok && pf.Cmd == c {
+                delete(editorPF, n)
+                if a, ok := agents[n]; ok {
+                    a.EditorPort = 0
+                    a.EditorVia = ""
+                    agents[n] = a
+                }
+            }
+            editorMu.Unlock()
+        }(name, cmd)
+        return port, nil
+    }
+    return 0, fmt.Errorf("failed to establish port-forward for %s", name)
+}
+
+// deriveServiceName attempts to map a k8s pod name from a Deployment to the Service name created by deploy script.
+// deploy script names Deployment and Service as agent-<timestamp> (e.g., agent-1690000000)
+// Pod names look like agent-<timestamp>-<replicaset>-<podid> (e.g., agent-1690000000-68c7b795b9-6qtzm)
+func deriveServiceName(podOrAgent string) string {
+    // If it matches the pattern ending with -<rs>-<pod>, strip the last two segments
+    re := regexp.MustCompile(`^(.*)-[a-z0-9]{9,10}-[a-z0-9]{5}$`)
+    if m := re.FindStringSubmatch(podOrAgent); m != nil {
+        return m[1]
+    }
+    // Otherwise, if it looks like agent-<timestamp>-something, take first two parts
+    parts := strings.Split(podOrAgent, "-")
+    if len(parts) >= 2 && strings.HasPrefix(podOrAgent, "agent-") {
+        return parts[0] + "-" + parts[1]
+    }
+    // Fallback: return as-is
+    return podOrAgent
+}
+
+func stopEditorForward(name string) bool {
+    editorMu.Lock()
+    pf, ok := editorPF[name]
+    editorMu.Unlock()
+    if !ok || pf.Cmd == nil { return false }
+    // best-effort kill
+    _ = pf.Cmd.Process.Kill()
+    editorMu.Lock()
+    delete(editorPF, name)
+    if a, ok := agents[name]; ok {
+        a.EditorPort = 0
+        a.EditorVia = ""
+        agents[name] = a
+    }
+    editorMu.Unlock()
+    return true
+}
 
 func bearerOrHeaderToken(r *http.Request) string {
     // Prefer header X-Auth-Token, fallback to Authorization: Bearer <token>
@@ -88,6 +269,48 @@ func registerHandlers(mux *http.ServeMux) {
     mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         h := Health{Status: "ok", Host: hostname()}
         writeJSON(w, h)
+    })
+
+    // Proxy endpoint to expose a local forwarded editor port over the orchestrator's HTTP port.
+    // Usage: GET /editor/proxy/{port}/... -> http://127.0.0.1:{port}/...
+    mux.HandleFunc("/editor/proxy/", func(w http.ResponseWriter, r *http.Request) {
+        // path = /editor/proxy/{port}/rest...
+        p := strings.TrimPrefix(r.URL.Path, "/editor/proxy/")
+        if p == "" { http.Error(w, "missing port", 400); return }
+        seg := strings.SplitN(p, "/", 2)
+        portStr := seg[0]
+        rest := "/"
+        if len(seg) == 2 && seg[1] != "" { rest = "/" + seg[1] }
+        // Validate port
+        if _, err := fmt.Sscanf(portStr, "%d", new(int)); err != nil {
+            http.Error(w, "bad port", 400); return
+        }
+        // Prepare reverse proxy to the locally-forwarded port
+        target, _ := url.Parse("http://127.0.0.1:" + portStr)
+        rp := httputil.NewSingleHostReverseProxy(target)
+        // Relax frame headers and leave Location/Cookies as-is; dashboard will rewrite on its side
+        rp.ModifyResponse = func(resp *http.Response) error {
+            resp.Header.Del("X-Frame-Options")
+            resp.Header.Del("Content-Security-Policy")
+            return nil
+        }
+        orig := rp.Director
+        // Optional auth header for fallback Python server
+        csHeader := os.Getenv("CODE_SERVER_AUTH_HEADER"); if csHeader == "" { csHeader = "X-Agent-Auth" }
+        csToken := os.Getenv("CODE_SERVER_TOKEN"); if csToken == "" { csToken = "password" }
+        rp.Director = func(req *http.Request) {
+            orig(req)
+            req.URL.Scheme = "http"
+            req.URL.Host = "127.0.0.1:" + portStr
+            req.URL.Path = rest
+            // Preserve query string
+            req.Host = req.URL.Host
+            req.Header.Set(csHeader, csToken)
+        }
+        rp.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
+            http.Error(w, "proxy error: "+err.Error(), 502)
+        }
+        rp.ServeHTTP(w, r)
     })
 
     mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
@@ -200,8 +423,10 @@ func registerHandlers(mux *http.ServeMux) {
         var req struct{ Name, Org string; Labels map[string]string }
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         if req.Name == "" || req.Org == "" { http.Error(w, "missing name/org", 400); return }
-        a := Agent{Name: req.Name, Org: req.Org, Labels: req.Labels, Status: "idle", LastSeen: time.Now()}
+    a := Agent{Name: req.Name, Org: req.Org, Labels: req.Labels, Status: "idle", LastSeen: time.Now()}
         agentsMu.Lock(); agents[req.Name] = a; agentsMu.Unlock()
+    // auto-open editor port-forward (best-effort)
+    go func(name, org string) { _, _ = ensureEditorForward(name, org) }(req.Name, req.Org)
         writeJSON(w, a)
     })
     mux.HandleFunc("/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
@@ -210,6 +435,10 @@ func registerHandlers(mux *http.ServeMux) {
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         if req.Name == "" { http.Error(w, "missing name", 400); return }
         agentsMu.Lock(); a := agents[req.Name]; a.Name = req.Name; if req.Org != "" { a.Org = req.Org }; if req.Status != "" { a.Status = req.Status }; a.LastSeen = time.Now(); agents[req.Name] = a; agentsMu.Unlock()
+        // best-effort ensure editor forward exists
+        if a.EditorPort == 0 {
+            go func(name, org string) { _, _ = ensureEditorForward(name, org) }(req.Name, req.Org)
+        }
         writeJSON(w, map[string]string{"ok":"1"})
     })
     mux.HandleFunc("/agents/log", func(w http.ResponseWriter, r *http.Request) {
@@ -262,6 +491,24 @@ func registerHandlers(mux *http.ServeMux) {
             }
         }
     })
+    // Editor control endpoints (token-protected)
+    mux.HandleFunc("/agents/editor/open", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Name, Org string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Name == "" { http.Error(w, "missing name", 400); return }
+        port, err := ensureEditorForward(req.Name, req.Org)
+        if err != nil { http.Error(w, err.Error(), 500); return }
+        writeJSON(w, map[string]any{"name": req.Name, "port": port})
+    }, "ORCHESTRATOR_TOKEN"))
+    mux.HandleFunc("/agents/editor/close", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Name string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Name == "" { http.Error(w, "missing name", 400); return }
+        ok := stopEditorForward(req.Name)
+        writeJSON(w, map[string]any{"name": req.Name, "stopped": ok})
+    }, "ORCHESTRATOR_TOKEN"))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

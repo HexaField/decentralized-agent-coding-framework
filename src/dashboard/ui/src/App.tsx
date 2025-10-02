@@ -12,9 +12,8 @@ const SERVER_BASE = (() => {
   return `${l.protocol}//${l.host}`
 })()
 
-
 // Dev debug stream
-const isDev = true//Boolean((import.meta as any)?.env?.DEV)
+const isDev = true //Boolean((import.meta as any)?.env?.DEV)
 
 // Types
 type Task = { id: string; status: string; text?: string }
@@ -25,6 +24,7 @@ type Agent = {
   currentTaskId?: string
   editorPort?: number | string
   port?: number | string
+  editorVia?: string
 }
 
 type Tab = 'Users' | 'Agents' | 'Projects' | 'Tasks' | 'Network'
@@ -46,7 +46,8 @@ export default function App() {
     } else if (t === 'dark') {
       root.classList.add('dark')
     } else {
-      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+      const prefersDark =
+        window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
       if (prefersDark) root.classList.add('dark')
       else root.classList.remove('dark')
     }
@@ -71,7 +72,9 @@ export default function App() {
 
   createEffect(() => {
     const t = theme()
-    try { localStorage.setItem('theme', t) } catch {}
+    try {
+      localStorage.setItem('theme', t)
+    } catch {}
     applyTheme(t)
   })
 
@@ -138,6 +141,9 @@ export default function App() {
     const a = agents().find((x) => x.name === name)
     const p = a?.editorPort ?? a?.port
     if (!p) return 'about:blank'
+    const via = a?.editorVia
+    if (via === 'orchestrator')
+      return `${SERVER_BASE}/embed/orchestrator/${encodeURIComponent(String(p))}/`
     return `${SERVER_BASE}/embed/local/${encodeURIComponent(String(p))}/`
   })
   const selectedAgentPort = createMemo(() => {
@@ -146,6 +152,34 @@ export default function App() {
     const a = agents().find((x) => x.name === name)
     const p = a?.editorPort ?? a?.port
     return p ? String(p) : ''
+  })
+
+  // If the proxied editor returns an error, auto-attempt to (re)open via orchestrator and reload iframe
+  const [iframeBust, setIframeBust] = createSignal('')
+  createEffect(() => {
+    const src = editorSrc()
+    const name = selectedAgent()
+    if (!name || !src || src === 'about:blank') return
+    ;(async () => {
+      try {
+        // Lightweight probe of the proxied root; same-origin so status is readable
+        const r = await fetch(src, { method: 'GET', cache: 'no-store', redirect: 'manual' })
+        if (r.status >= 500) throw new Error('embed 5xx')
+      } catch {
+        try {
+          await fetch(`${SERVER_BASE}/api/editor/open`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, org: org() }),
+          })
+          // give orchestrator a moment to bind, refresh state, and force iframe reload
+          setTimeout(() => {
+            loadState()
+            setIframeBust(`?t=${Date.now()}`)
+          }, 1200)
+        } catch {}
+      }
+    })()
   })
 
   // Logs SSE management
@@ -182,6 +216,7 @@ export default function App() {
           role: a.role || a.Role,
           currentTaskId: a.taskId || a.TaskId,
           editorPort: a.editorPort || a.EditorPort || a.port || a.Port,
+          editorVia: a.editorVia || a.EditorVia,
         }))
       )
       // Default select first agent if none selected
@@ -338,14 +373,17 @@ export default function App() {
             <option value="system">System</option>
           </select>
         </div>
-        <button class="ml-2 px-3 py-2 border rounded dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100" onClick={() => setIsChatOpen((v) => !v)}>
+        <button
+          class="ml-2 px-3 py-2 border rounded dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          onClick={() => setIsChatOpen((v) => !v)}
+        >
           {isChatOpen() ? '>' : '<'}
         </button>
       </header>
 
       {/* Main content area with optional right chat panel */}
       <div
-  class="flex-1 grid bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+        class="flex-1 grid bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
         style={{
           display: 'grid',
           'grid-template-columns': isChatOpen() ? '1fr 340px' : '1fr',
@@ -354,7 +392,7 @@ export default function App() {
         }}
       >
         {/* Center area by tab */}
-  <main class="overflow-auto p-3">
+        <main class="overflow-auto p-3">
           <Show when={activeTab() === 'Agents'}>
             {/* Agents layout: left list, center editor, bottom logs+prompt */}
             <div
@@ -365,12 +403,15 @@ export default function App() {
               }}
             >
               {/* Left: agent list */}
-        <aside class="border rounded p-2 overflow-auto dark:border-slate-700 dark:bg-slate-800" style={{ 'grid-row': '1 / span 2' }}>
+              <aside
+                class="border rounded p-2 overflow-auto dark:border-slate-700 dark:bg-slate-800"
+                style={{ 'grid-row': '1 / span 2' }}
+              >
                 <div class="text-sm font-semibold mb-2">Agents</div>
                 <For each={agents()}>
                   {(a) => (
                     <button
-          class={`w-full text-left border rounded p-2 mb-2 dark:border-slate-700 dark:bg-slate-800 ${selectedAgent() === a.name ? 'bg-slate-200 dark:bg-slate-700' : ''}`}
+                      class={`w-full text-left border rounded p-2 mb-2 dark:border-slate-700 dark:bg-slate-800 ${selectedAgent() === a.name ? 'bg-slate-200 dark:bg-slate-700' : ''}`}
                       onClick={() => setSelectedAgent(a.name)}
                     >
                       <div class="font-semibold">{a.name}</div>
@@ -391,41 +432,65 @@ export default function App() {
                       {selectedAgentPort() ? `(port ${selectedAgentPort()})` : ''}
                     </div>
                     <Show when={!selectedAgentPort()}>
-          <div class="text-xs text-red-500">
+                      <div class="text-xs text-red-500">
                         No editor port reported by backend for this agent.
                       </div>
                     </Show>
+                    <button
+                      class="ml-auto px-2 py-1 border rounded text-xs dark:border-slate-700"
+                      onClick={async () => {
+                        const name = selectedAgent()
+                        if (!name) return
+                        try {
+                          await fetch(`${SERVER_BASE}/api/editor/open`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name, org: org() }),
+                          })
+                          setTimeout(loadState, 1200)
+                        } catch {}
+                      }}
+                    >
+                      Open Editor
+                    </button>
                   </div>
-                  <iframe class="w-full h-full min-h-[400px]" src={editorSrc()} />
+                  <iframe class="w-full h-full min-h-[400px]" src={editorSrc() + iframeBust()} />
                 </section>
               </Show>
 
               {/* Bottom: logs (left) and agent prompt (right) — only if agent selected */}
               <Show when={!!selectedAgent()}>
-        <section class="grid gap-3" style={{ 'grid-template-columns': '1fr 1fr' }}>
+                <section class="grid gap-3" style={{ 'grid-template-columns': '1fr 1fr' }}>
                   <div class="border rounded overflow-hidden flex flex-col dark:border-slate-700">
-                    <div class="p-2 border-b font-semibold text-sm dark:border-slate-700">[server] agent logs</div>
+                    <div class="p-2 border-b font-semibold text-sm dark:border-slate-700">
+                      [server] agent logs
+                    </div>
                     <pre class="flex-1 bg-slate-50 dark:bg-slate-800 p-2 overflow-auto whitespace-pre-wrap">
-                      {agentLogsText() + (taskLogsText() ? `\n\n----- current task logs -----\n${taskLogsText()}` : '')}
+                      {agentLogsText() +
+                        (taskLogsText()
+                          ? `\n\n----- current task logs -----\n${taskLogsText()}`
+                          : '')}
                     </pre>
                   </div>
                   <div class="border rounded overflow-hidden flex flex-col dark:border-slate-700">
-                    <div class="p-2 border-b font-semibold text-sm dark:border-slate-700">Prompt Agent</div>
+                    <div class="p-2 border-b font-semibold text-sm dark:border-slate-700">
+                      Prompt Agent
+                    </div>
                     <div class="p-2 flex gap-2 items-start">
                       <textarea
-            class="border p-2 rounded w-full h-24 dark:border-slate-700 dark:bg-slate-800"
+                        class="border p-2 rounded w-full h-24 dark:border-slate-700 dark:bg-slate-800"
                         placeholder="Ask this agent to do something… (schedules a task for its org)"
                         onInput={(e) => setAgentPromptInput(e.currentTarget.value)}
                         value={agentPromptInput()}
                       />
                       <button
-            class="px-3 py-2 bg-indigo-600 text-white rounded self-end"
+                        class="px-3 py-2 bg-indigo-600 text-white rounded self-end"
                         onClick={askAgentLLM}
                       >
                         Prompt
                       </button>
                     </div>
-          <pre class="bg-slate-50 dark:bg-slate-800 p-2 h-28 overflow-auto whitespace-pre-wrap">
+                    <pre class="bg-slate-50 dark:bg-slate-800 p-2 h-28 overflow-auto whitespace-pre-wrap">
                       {agentPromptLog().join('\n')}
                     </pre>
                   </div>
@@ -485,7 +550,10 @@ export default function App() {
             <div class="mt-3 text-xs">
               <div class="font-semibold mb-1">Debug</div>
               <div class="flex gap-2 mb-2">
-                <button class="px-2 py-1 border rounded dark:border-slate-700" onClick={manualEnsure}>
+                <button
+                  class="px-2 py-1 border rounded dark:border-slate-700"
+                  onClick={manualEnsure}
+                >
                   Ensure Agent
                 </button>
                 <button

@@ -38,7 +38,7 @@ services:
       - ../scripts:/scripts:ro
       - ../state:/state
     ports:
-      - "127.0.0.1:8090:8090"
+      - "0.0.0.0:8090:8090"
     networks:
       - mvp
 
