@@ -454,7 +454,13 @@ export default function App() {
                       Open Editor
                     </button>
                   </div>
-                  <iframe class="w-full h-full min-h-[400px]" src={editorSrc() + iframeBust()} />
+                  <iframe
+                    class="w-full h-full min-h-[400px]"
+                    src={editorSrc() + iframeBust()}
+                    allow="clipboard-write; clipboard-read; fullscreen; accelerometer; autoplay; camera; microphone; display-capture"
+                    allowfullscreen
+                    referrerpolicy="no-referrer"
+                  />
                 </section>
               </Show>
 

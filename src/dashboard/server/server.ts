@@ -28,7 +28,7 @@ proxy.on('proxyRes', (proxyRes, req: any, res) => {
     res.setHeader('X-Frame-Options', 'ALLOWALL')
     // If this is an embed request, rewrite redirects and cookie paths to stay under the embed base
     const base: string | undefined = req && req._embedBase
-    if (base) {
+  if (base) {
       const headers: any = (proxyRes as any).headers || {}
       const loc = headers['location'] || headers['Location']
       if (typeof loc === 'string' && loc) {
@@ -47,7 +47,17 @@ proxy.on('proxyRes', (proxyRes, req: any, res) => {
       const setCookie = headers['set-cookie'] || headers['Set-Cookie']
       if (setCookie) {
         const arr = Array.isArray(setCookie) ? setCookie : [String(setCookie)]
-        const rewritten = arr.map((c: string) => c.replace(/Path=\//i, `Path=${base}/`))
+        const rewritten = arr.map((c: string) => {
+          let cc = c
+          // Ensure cookie path stays under embed base
+          cc = cc.replace(/Path=\/?(;|$)/i, `Path=${base}/$1`)
+          // Drop Secure for local http; optional: force SameSite=Lax to avoid None;Secure requirement
+          cc = cc.replace(/;\s*Secure/gi, '')
+          cc = cc.replace(/;\s*SameSite=None/gi, '; SameSite=Lax')
+          // Drop Domain attribute so cookie is set for current host only
+          cc = cc.replace(/;\s*Domain=[^;]*/gi, '')
+          return cc
+        })
         headers['set-cookie'] = rewritten
       }
     }
