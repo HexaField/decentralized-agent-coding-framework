@@ -10,6 +10,7 @@ services:
       - ORCHESTRATOR_TOKEN=${ORCHESTRATOR_TOKEN}
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
       - ORCHESTRATOR_CONFIG=/app/configs/orchestrator.example.yaml
+      - K3D_API_HOST=host.docker.internal
     volumes:
       - ../orchestrator/configs:/app/configs:ro
       - ../state:/state

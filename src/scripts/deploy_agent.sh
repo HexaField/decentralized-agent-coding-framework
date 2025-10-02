@@ -5,7 +5,17 @@ TASK=${2:-"Demo task"}
 if [[ -z "$ORG" ]]; then echo "Usage: $0 <org> [task]"; exit 1; fi
 NAME="org-$ORG"
 
-export KUBECONFIG=$(k3d kubeconfig write "$NAME")
+# Generate a kubeconfig whose server URL is reachable from containers
+K3D_API_HOST=${K3D_API_HOST:-host.docker.internal}
+TMP_KUBECONFIG="/tmp/kubeconfig-${NAME}"
+# Get kubeconfig and rewrite server host from 0.0.0.0/127.0.0.1 to a container-reachable host
+k3d kubeconfig get "$NAME" > "$TMP_KUBECONFIG"
+sed -i "s#server: https://0\\.0\\.0\\.0:#server: https://${K3D_API_HOST}:#" "$TMP_KUBECONFIG" || true
+sed -i "s#server: https://127\\.0\\.0\\.1:#server: https://${K3D_API_HOST}:#" "$TMP_KUBECONFIG" || true
+export KUBECONFIG="$TMP_KUBECONFIG"
+
+# Fast preflight to fail early if API is unreachable
+kubectl version --request-timeout=5s >/dev/null
 AGENT_NAME="agent-$(date +%s)"
 NAMESPACE="mvp-agents"
 kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
