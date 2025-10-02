@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-sample
+  namespace: mvp-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-sample
+  template:
+    metadata:
+      labels:
+        app: agent-sample
+    spec:
+      containers:
+      - name: agent
+        image: mvp-agent:latest
+        env:
+        - name: ORG_NAME
+          value: acme
+        - name: TASK_TEXT
+          value: "Demo task"
+        - name: CODE_SERVER_PASSWORD
+          value: password
+        ports:
+        - containerPort: 8443

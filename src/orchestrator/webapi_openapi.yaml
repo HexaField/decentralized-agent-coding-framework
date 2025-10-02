@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: MVP Orchestrator API
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': { description: OK }
+  /peers:
+    get:
+      responses: { '200': { description: OK } }
+  /clusters:
+    get:
+      responses: { '200': { description: OK } }
+  /schedule:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json: {}
+      responses: { '200': { description: scheduled } }
+  /tasks:
+    get: { responses: { '200': { description: OK } } }
+  /agents:
+    get: { responses: { '200': { description: OK } } }

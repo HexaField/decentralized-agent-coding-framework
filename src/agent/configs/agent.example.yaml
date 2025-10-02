@@ -1,0 +1,4 @@
+org: acme
+codeServerPassword: password
+tokens:
+  agent: agent-secret

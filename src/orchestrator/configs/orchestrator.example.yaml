@@ -1,0 +1,15 @@
+listen: ":8080"
+peers:
+  - orchestrator-1.tailnet.local
+  - orchestrator-2.tailnet.local
+orgs:
+  - name: acme
+    cluster: org-acme
+    labels: ["region:ap-southeast-2"]
+  - name: devrel
+    cluster: org-devrel
+    labels: ["region:us-west"]
+dashboard:
+  endpoint: http://dashboard:8090
+security:
+  token: ${ORCHESTRATOR_TOKEN}

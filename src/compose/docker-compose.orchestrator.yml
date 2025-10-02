@@ -1,0 +1,34 @@
+version: "3.9"
+services:
+  orchestrator:
+    image: mvp-orchestrator:${IMAGE_TAG:-latest}
+    container_name: mvp-orchestrator
+    environment:
+      - ORCHESTRATOR_TOKEN=${ORCHESTRATOR_TOKEN}
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
+      - ORCHESTRATOR_CONFIG=/app/configs/orchestrator.example.yaml
+    volumes:
+      - ../orchestrator/configs:/app/configs:ro
+      - ../state:/state
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - mvp
+
+  dashboard:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["node","server/server.js"]
+    environment:
+      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
+    volumes:
+      - ../dashboard:/app
+      - ../state:/state
+    ports:
+      - "127.0.0.1:8090:8090"
+    networks:
+      - mvp
+
+networks:
+  mvp:
+    driver: bridge
