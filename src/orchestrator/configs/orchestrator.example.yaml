@@ -1,6 +1,16 @@
 listen: ":8080"
 peers:
   - orchestrator-1.tailnet.local
+orgs:
+  - name: acme
+    cluster: org-acme
+dashboard:
+  endpoint: http://dashboard:8090
+security:
+  token: ${ORCHESTRATOR_TOKEN}
+listen: ":8080"
+peers:
+  - orchestrator-1.tailnet.local
   - orchestrator-2.tailnet.local
 orgs:
   - name: acme

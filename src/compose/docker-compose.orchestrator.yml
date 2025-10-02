@@ -1,7 +1,9 @@
-version: "3.9"
 services:
   orchestrator:
     image: mvp-orchestrator:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: docker/orchestrator.Dockerfile
     container_name: mvp-orchestrator
     environment:
       - ORCHESTRATOR_TOKEN=${ORCHESTRATOR_TOKEN}
@@ -11,14 +13,14 @@ services:
       - ../orchestrator/configs:/app/configs:ro
       - ../state:/state
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:18080:8080"
     networks:
       - mvp
 
   dashboard:
     image: node:20-alpine
     working_dir: /app
-    command: ["node","server/server.js"]
+    command: ["sh","-lc","npm install --omit=dev && node server/server.js"]
     environment:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
     volumes:

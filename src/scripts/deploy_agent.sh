@@ -27,6 +27,7 @@ spec:
       containers:
       - name: agent
         image: mvp-agent:${IMAGE_TAG:-latest}
+        imagePullPolicy: Never
         env:
         - { name: ORG_NAME, value: "${ORG}" }
         - { name: TASK_TEXT, value: "${TASK}" }
