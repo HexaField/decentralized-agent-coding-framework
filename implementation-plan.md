@@ -9,8 +9,8 @@ This plan describes how to implement the Decentralized Agent Coding Framework fr
 
 ## Environments & Tooling
 
-- Local: Docker, k3s/microk8s, Tailscale client, make or task runner.
-- CI: Containerized jobs; KIND or k3d cluster; a Tailscale substitute or sandbox (wireguard‑based stub) MUST be provided to exercise control paths without exposing secrets.
+- Local: Docker, Talos (as Kubernetes OS/cluster manager), Tailscale client managed by Headscale, make or task runner.
+- CI: Containerized jobs; Talos cluster provisioned via QEMU/Firecracker or Docker-in-Docker; a Tailscale substitute or sandbox (wireguard‑based stub) MUST be provided to exercise control paths without exposing secrets. Headscale MUST be used as the Tailscale control server in CI.
 - Languages/Stacks: Keep pluggable; initial reference MUST provide containerized services and scripts.
 
 Global testing principles:
@@ -30,19 +30,19 @@ Milestones:
 - Tests: unit (health handler), contract (OpenAPI), image build smoke test.
 
 2) Tailscale Mesh Integration
-- MUST join a Tailscale network (or stub in CI) and expose device identity and tags to the orchestrator.
-- MUST enforce ACL checks in control‑plane requests.
-- Tests: integration (mesh join/stub), ACL deny/allow cases, mTLS handshake tests.
+- MUST join a Tailscale network coordinated by Headscale (or stub in CI) and expose device identity and tags to the orchestrator.
+- MUST enforce ACL checks in control‑plane requests via Headscale policies.
+- Tests: integration (mesh join/stub via Headscale), ACL deny/allow cases, mTLS handshake tests.
 
 3) Capacity & Discovery
 - MUST report capacity (CPU/RAM/GPU/tags) and node health.
-- MUST discover/register per‑org clusters; SHOULD support multiple clusters per host.
-- Tests: unit (capacity collector), integration (cluster registration), contract (GET /capacity, GET /pods schemas).
+- MUST discover/register per‑org clusters managed by Talos; SHOULD support multiple clusters per host.
+- Tests: unit (capacity collector), integration (cluster registration on Talos), contract (GET /capacity, GET /pods schemas).
 
 4) Scheduling & Placement (MVP)
 - MUST accept POST /schedule with workload manifest and placement constraints.
 - SHOULD implement simple scoring by capacity and tags; MAY support quotas initially as static policy.
-- Tests: contract (schedule request/response), integration (pod visible in cluster), e2e (sample workload scheduled and observed).
+- Tests: contract (schedule request/response), integration (pod visible in Talos-managed cluster), e2e (sample workload scheduled and observed).
 
 5) Dashboard (Read‑Mostly)
 - MUST render nodes, clusters, pods, capacity, and health.
@@ -109,7 +109,7 @@ Exit criteria for Phase 3: All acceptance criteria in `requirements.md` Phase 3 
 ## CI & Local Execution
 
 - A make/task target MUST run the full test matrix locally (with Tailscale stub) and in CI.
-- KIND/k3d MUST provision clusters for tests; ephemeral namespaces per run.
+- Talos MUST provision clusters for tests (e.g., using talosctl with QEMU); ephemeral namespaces per run.
 - e2e tests MUST seed minimal fixtures (toy repo, vault snippets, task samples).
 - Test reports (JUnit), coverage, and lightweight SBOM SHOULD be published from CI.
 

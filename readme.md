@@ -5,7 +5,7 @@ A production-ready, decentralized, AI‑augmented development platform that secu
 ## What it is
 
 - Single orchestrator image that runs on your machine and peers with others over Tailscale
-- Per‑organization Kubernetes clusters for scheduling agent pods and workloads
+- Per‑organization Kubernetes clusters (Talos-managed) for scheduling agent pods and workloads
 - Clear separation of user vs. agent identity and credentials
 - Agents that build context, code, test, document, and open PRs automatically
 - AI‑enhanced dashboard for visibility and natural‑language control
@@ -22,8 +22,8 @@ A production-ready, decentralized, AI‑augmented development platform that secu
 ## Key components
 
 - Orchestrator API: health, capacity, scheduling, eviction, and pod listing
-- Tailscale mesh: private, encrypted connectivity across nodes and orgs
-- Kubernetes: workload placement, quotas, policies, and isolation per org
+- Tailscale mesh (Headscale-controlled): private, encrypted connectivity across nodes and orgs
+- Kubernetes (Talos-managed): workload placement, quotas, policies, and isolation per org
 - Agents: VS Code Server, CLI toolchain (Copilot/Codex, linters, tests), PR automation
 - Spec‑Kit: tasks, requirements, and workflow state tracking
 - Memory & Context Plane (MCP): semantic context, logs, embeddings, PR metadata
@@ -53,7 +53,7 @@ High‑level phases that map to the three parts of the system.
 
 ## Security by design
 
-- Tailscale device identity and node tags
+- Tailscale device identity and node tags via Headscale
 - mTLS between orchestrators; signed workload manifests
 - Kubernetes RBAC, NetworkPolicies, and per‑workload quotas
 - Least‑privilege, time‑bound agent credentials distinct from users

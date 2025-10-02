@@ -11,9 +11,9 @@ This document serves as a **system specification** for a decentralized, AI-augme
    * Provide a single Docker image that runs as the main software on a user’s machine.
    * Allow connections to other nodes on the same Tailscale network.
 
-2. **Distributed Kubernetes Clusters:**
+2. **Distributed Kubernetes Clusters (Talos-managed):**
 
-   * Each 'organization' has a dedicated distributed Kubernetes cluster.
+   * Each 'organization' has a dedicated distributed Kubernetes cluster managed by Talos.
    * Users belonging to multiple organizations may have multiple clusters running on the same machine.
    * Clusters support agent deployment, resource sharing, and workload scheduling.
 
@@ -64,9 +64,9 @@ This document serves as a **system specification** for a decentralized, AI-augme
 
 **Core elements**
 
-* **Local Orchestrator (single image):** Runs on each machine, peers with other orchestrators via Tailscale, exposes gRPC/HTTP for scheduling, health, and metrics.
-* **Tailscale Mesh:** Encrypted overlay that connects orchestrators, cluster nodes, and services without public exposure; ACLs manage who can talk to whom.
-* **Distributed Kubernetes per Organization:** Each org has its own logical/physical cluster (k3s/microk8s/managed K8s); multiple org clusters may co-reside on a host.
+* **Local Orchestrator (single image):** Runs on each machine, peers with other orchestrators via Tailscale managed by Headscale, exposes gRPC/HTTP for scheduling, health, and metrics.
+* **Tailscale Mesh (Headscale-controlled):** Encrypted overlay that connects orchestrators, cluster nodes, and services without public exposure; ACLs managed by Headscale control server define who can talk to whom.
+* **Distributed Kubernetes per Organization:** Each org has its own logical/physical cluster managed by Talos; multiple org clusters may co-reside on a host.
 * **Scheduling & Placement:** Orchestrators coordinate capacity announcements (CPU/GPU/mem/tags), negotiate placement across peers, and enforce policies/quotas.
 * **AI-Enhanced Dashboard:** Web UI that aggregates state from orchestrators and clusters (users, agents, nodes, tasks, PRs, health); includes an AI command bar for natural-language control.
 
@@ -77,7 +77,7 @@ This document serves as a **system specification** for a decentralized, AI-augme
 
 **Security**
 
-* Tailscale device identity + node tags; mTLS between orchestrators; signed workload manifests; K8s RBAC/NetworkPolicies.
+* Tailscale device identity + node tags via Headscale; mTLS between orchestrators; signed workload manifests; K8s RBAC/NetworkPolicies.
 
 ---
 
@@ -127,8 +127,8 @@ This document serves as a **system specification** for a decentralized, AI-augme
 ## 3. Dependencies
 
 * **Docker:** Runs the main orchestrator and agent images to provide a consistent containerized environment.
-* **Kubernetes (k3s/microk8s/cluster):** Orchestrates agent pods, workloads, and ephemeral resources across the network.
-* **Tailscale VPN:** Provides encrypted mesh networking for orchestrators and agents across machines.
+* **Kubernetes (Talos-managed clusters):** Orchestrates agent pods, workloads, and ephemeral resources across the network.
+* **Tailscale VPN (Headscale):** Provides encrypted mesh networking for orchestrators and agents across machines, with Headscale as the control server.
 * **AI-Enhanced Dashboard (Web UI):** Unified control plane to view and act on users, agents, clusters, tasks, PRs.
 * **VS Code Server (code-server):** Allows users to access and edit files on agent nodes through a browser.
 * **OpenAI Codex / Copilot CLI:** Enables agentic workflows for automated coding tasks.
