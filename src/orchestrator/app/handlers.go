@@ -31,6 +31,7 @@ type Agent struct {
     Org    string            `json:"org"`
     Labels map[string]string `json:"labels,omitempty"`
     Status string            `json:"status"`
+    LastSeen time.Time       `json:"lastSeen"`
 }
 
 var (
@@ -39,6 +40,12 @@ var (
 
     agentsMu sync.RWMutex
     agents   = make(map[string]Agent)
+
+    taskLogsMu sync.RWMutex
+    taskLogs   = make(map[string][]string)
+
+    agentLogsMu sync.RWMutex
+    agentLogs   = make(map[string][]string)
 )
 
 func bearerOrHeaderToken(r *http.Request) string {
@@ -109,8 +116,16 @@ func registerHandlers(mux *http.ServeMux) {
         var req struct{ Org, AgentID string }
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         if req.Org == "" || req.AgentID == "" { http.Error(w, "missing org/agentId", 400); return }
-        // naive: first scheduled task for org
+        // prefer tasks that hint this agent, otherwise first scheduled task for org
         tasksMu.Lock(); defer tasksMu.Unlock()
+        // pass 1: agent-hinted
+        for id, t := range tasks {
+            if t.Org == req.Org && t.Status == "scheduled" && t.AgentHint == req.AgentID {
+                t.Status = "running"; t.AgentID = req.AgentID; tasks[id] = t
+                writeJSON(w, t); return
+            }
+        }
+        // pass 2: any scheduled
         for id, t := range tasks {
             if t.Org == req.Org && t.Status == "scheduled" {
                 t.Status = "running"; t.AgentID = req.AgentID; tasks[id] = t
@@ -134,14 +149,55 @@ func registerHandlers(mux *http.ServeMux) {
         var req struct{ ID, Line string }
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         if req.ID == "" { http.Error(w, "missing id", 400); return }
+        if req.Line != "" { appendTaskLog(req.ID, req.Line) }
         log.Printf("task[%s]: %s", req.ID, req.Line)
         w.WriteHeader(204)
+    })
+    mux.HandleFunc("/tasks/logs", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet { http.Error(w, "method", 405); return }
+        id := r.URL.Query().Get("id")
+        if id == "" { http.Error(w, "missing id", 400); return }
+        taskLogsMu.RLock(); lines := append([]string(nil), taskLogs[id]...); taskLogsMu.RUnlock()
+        writeJSON(w, map[string]any{"id": id, "lines": lines})
     })
     mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
         agentsMu.RLock(); defer agentsMu.RUnlock()
         out := make([]Agent, 0, len(agents))
         for _, a := range agents { out = append(out, a) }
         writeJSON(w, out)
+    })
+    mux.HandleFunc("/agents/register", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Name, Org string; Labels map[string]string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Name == "" || req.Org == "" { http.Error(w, "missing name/org", 400); return }
+        a := Agent{Name: req.Name, Org: req.Org, Labels: req.Labels, Status: "idle", LastSeen: time.Now()}
+        agentsMu.Lock(); agents[req.Name] = a; agentsMu.Unlock()
+        writeJSON(w, a)
+    })
+    mux.HandleFunc("/agents/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Name, Org, Status string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Name == "" { http.Error(w, "missing name", 400); return }
+        agentsMu.Lock(); a := agents[req.Name]; a.Name = req.Name; if req.Org != "" { a.Org = req.Org }; if req.Status != "" { a.Status = req.Status }; a.LastSeen = time.Now(); agents[req.Name] = a; agentsMu.Unlock()
+        writeJSON(w, map[string]string{"ok":"1"})
+    })
+    mux.HandleFunc("/agents/log", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Name, Line string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Name == "" { http.Error(w, "missing name", 400); return }
+        if req.Line != "" { appendAgentLog(req.Name, req.Line) }
+        log.Printf("agent[%s]: %s", req.Name, req.Line)
+        w.WriteHeader(204)
+    })
+    mux.HandleFunc("/agents/logs", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodGet { http.Error(w, "method", 405); return }
+        name := r.URL.Query().Get("name")
+        if name == "" { http.Error(w, "missing name", 400); return }
+        agentLogsMu.RLock(); lines := append([]string(nil), agentLogs[name]...); agentLogsMu.RUnlock()
+        writeJSON(w, map[string]any{"name": name, "lines": lines})
     })
 }
 
@@ -153,4 +209,18 @@ func writeJSON(w http.ResponseWriter, v any) {
 func hostname() string {
     h, _ := os.Hostname()
     return h
+}
+
+func appendTaskLog(id, line string) {
+    taskLogsMu.Lock(); defer taskLogsMu.Unlock()
+    b := append(taskLogs[id], time.Now().Format(time.RFC3339)+" "+line)
+    if len(b) > 200 { b = b[len(b)-200:] }
+    taskLogs[id] = b
+}
+
+func appendAgentLog(name, line string) {
+    agentLogsMu.Lock(); defer agentLogsMu.Unlock()
+    b := append(agentLogs[name], time.Now().Format(time.RFC3339)+" "+line)
+    if len(b) > 200 { b = b[len(b)-200:] }
+    agentLogs[name] = b
 }

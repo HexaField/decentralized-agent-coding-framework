@@ -17,7 +17,11 @@ func main() {
     if orchURL == "" { orchURL = "http://host.k3d.internal:18080" }
     log.Printf("agent starting for org=%s", org)
     client := &http.Client{ Timeout: 10 * time.Second }
+    // register once
+    postJSON(client, orchURL+"/agents/register", orchTok, map[string]any{"name": agentID, "org": org})
     for {
+        // heartbeat idle
+        postJSON(client, orchURL+"/agents/heartbeat", orchTok, map[string]any{"name": agentID, "org": org, "status": "idle"})
         // claim a task
         var claimReq = map[string]string{"org": org, "agentID": agentID}
         b,_ := json.Marshal(claimReq)
@@ -50,13 +54,15 @@ func main() {
                 client.Do(rq2)
             }
         }
-        logUpdate("running", "claimed task")
-        PullContext()
+    logUpdate("running", "claimed task")
+    postJSON(client, orchURL+"/agents/heartbeat", orchTok, map[string]any{"name": agentID, "org": org, "status": "running"})
+    PullContext(); postJSON(client, orchURL+"/agents/log", orchTok, map[string]any{"name": agentID, "line": "context pulled"})
         logUpdate("running", "context pulled")
-        RunTask(taskText)
+    RunTask(taskText); postJSON(client, orchURL+"/agents/log", orchTok, map[string]any{"name": agentID, "line": "task executed"})
         logUpdate("running", "task execution complete")
-        OpenPR()
+    OpenPR(); postJSON(client, orchURL+"/agents/log", orchTok, map[string]any{"name": agentID, "line": "PR opened"})
         logUpdate("completed", "PR opened; task done")
+    postJSON(client, orchURL+"/agents/heartbeat", orchTok, map[string]any{"name": agentID, "org": org, "status": "idle"})
     }
 }
 
@@ -68,4 +74,12 @@ func getHostname() string {
 func getString(v any) string {
     if s, ok := v.(string); ok { return s }
     return ""
+}
+
+func postJSON(client *http.Client, url, token string, body any) {
+    b,_ := json.Marshal(body)
+    req,_ := http.NewRequest("POST", url, bytes.NewReader(b))
+    req.Header.Set("Content-Type","application/json")
+    if token != "" { req.Header.Set("X-Auth-Token", token) }
+    client.Do(req)
 }

@@ -3,7 +3,7 @@
 A living, end-to-end backlog tracking what’s built, what’s verified, and what’s next for the distributed AI-augmented dev lab MVP.
 
 Current quick links:
-- Orchestrator: http://127.0.0.1:18080/health
+- Orchestrator: http://127.0.0.1:18080/health (bound on 0.0.0.0 for k3d pods)
 - Dashboard: http://127.0.0.1:8090/ui (API: /api/health)
 - Agent (local port-forward): http://127.0.0.1:8443/
 
@@ -40,6 +40,7 @@ Repo layout of interest:
 - [ ] Expand to full CRUD and persistence
 - [x] Implement token auth (use `ORCHESTRATOR_TOKEN`) for schedule/mutations
 - [x] Add unit tests and basic request validation
+ - [x] Add agent loop APIs: `POST /tasks/claim`, `POST /tasks/update`, `POST /tasks/log`
 
 ## Phase 3 — Dashboard Service (Node/Express + SPA)
 - [x] Server: Express with `/api/health`, `/api/state`, `/api/command`
@@ -49,6 +50,7 @@ Repo layout of interest:
 - [x] Show task events in UI and display last PR link from `/state`
 - [x] Add minimal tests (supertest/mocha) and linting (eslint)
  - [x] Add schedule form in UI and server proxy to orchestrator
+ - [x] Embed agent code-server in iframe via reverse proxy (with WS support)
 
 ## Phase 4 — Agent Image & Runtime (Go + editor)
 - [x] Go agent binary builds; stubs for:
@@ -62,6 +64,7 @@ Repo layout of interest:
  - [x] Upgrade agent image to support code-server (standalone binary, arch-aware)
  - [x] Gate editor with auth or token (code-server password via CODE_SERVER_PASSWORD; fallback keeps header auth)
  - [x] Include readiness/liveness probes for editor (:8443)
+ - [x] Agent polls orchestrator, claims tasks by org, posts status/log updates
 
 ## Phase 5 — Kubernetes Workflow (k3d)
 - [x] Create per-org cluster (`create_org_cluster.sh`)
@@ -125,8 +128,9 @@ Repo layout of interest:
    - [x] Build agent image and import to k3d; deploy with `./src/scripts/deploy_agent.sh demo "Build MVP demo"`
 3) Access agent workspace/editor port
    - [x] `./src/scripts/open_code_server.sh demo <agent-name>` → browse http://127.0.0.1:8443 (code-server; default password: "password")
-4) Schedule a task to orchestrator (token required)
-   - [x] `curl -X POST http://127.0.0.1:18080/schedule -H 'X-Auth-Token: <token>' -d '{"org":"acme","task":"demo"}'`
+4) Schedule a task to orchestrator (token required) — agent claims and executes
+   - [x] From dashboard UI or curl: `POST /schedule` (token in `X-Auth-Token`)
+5) Optional: Embed code-server in dashboard (enter local forward port, then Load)
 
 Notes:
 - Orchestrator /health and dashboard /api/health both return `{ "status": "ok" }`.
@@ -135,10 +139,10 @@ Notes:
 ---
 
 ## Top next priorities
-- [ ] Improve agent readiness: ensure 200 /health before marking Ready (code-server can take a moment to start)
-- [ ] Dashboard show PR/task outputs from `/state` and orchestrator’s live task list
+- [ ] Dashboard auto-refresh or SSE for live task status and logs
+- [ ] Persist task logs and expose `/tasks/:id/logs`; live-tail in dashboard
 - [ ] Expand orchestrator to full CRUD + persistence (and expose to dashboard)
-- [ ] PVC for agent `/state` with persistence; surface PR URL in dashboard
+- [ ] PVC for agent `/state` and surface PR URL/artifacts in dashboard
 - [ ] CI pipeline for build/test and container publish; switch imagePullPolicy accordingly
 
 ---
@@ -146,3 +150,4 @@ Notes:
 ## Changelog for this backlog
 - 2025-10-02: Initial backlog created with status reflecting the working quick-start and identified next steps.
 - 2025-10-02: Phase 0–2 completed: architecture doc added, Makefile/.env updated, orchestrator auth + in-memory tasks and tests implemented; schedule endpoint verified.
+ - 2025-10-02: Added agent claim/update/log APIs; agent now polls and executes tasks; dashboard can embed code-server via proxy with WS support.

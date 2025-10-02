@@ -52,6 +52,25 @@ function fetchJSON(url, opts={}){
   })
 }
 
+async function spawnAgent(org, prompt){
+  return new Promise((resolve,reject)=>{
+    const { spawn } = require('child_process')
+    const args = [path.join('/scripts','deploy_agent.sh'), org, prompt||'']
+    const proc = spawn('bash', args, { stdio: 'pipe' })
+    let out = ''
+    proc.stdout.on('data', d=> out+=d.toString())
+    proc.stderr.on('data', d=> out+=d.toString())
+    proc.on('close', code=>{
+      if(code===0) resolve({ok:true, output: out})
+      else reject(new Error(out))
+    })
+  })
+}
+
+// In-memory chats
+const chats = { global: [] } // {role:'user'|'agent', text}
+const agentChats = {} // name -> [{role,text}]
+
 app.use('/ui', express.static(path.join(__dirname, '..', 'ui')))
 
 app.use((req,res,next)=>{
@@ -87,13 +106,71 @@ app.post('/api/command', (req,res)=>{
   res.json({ok:true, echo:q})
 })
 
+// Chat APIs
+app.get('/api/chat', (req,res)=>{ res.json({messages: chats.global}) })
+app.post('/api/chat', async (req,res)=>{
+  const org = req.body && req.body.org || 'acme'
+  const text = req.body && req.body.text || ''
+  chats.global.push({role:'user', text})
+  // schedule a high-level task; agent may not exist yet
+  try{
+    // schedule task
+    const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
+    const body = { org, task: text }
+    const out = await fetchJSON(`${ORCH_URL}/schedule`, { method:'POST', headers, body })
+    // best-effort: spawn agent if none available; let orchestrator handle claim
+    spawnAgent(org, text).catch(()=>{})
+    chats.global.push({role:'system', text:`scheduled task ${out.id||''}`})
+    res.json({ok:true, task: out})
+  }catch(e){ res.status(502).json({error:String(e)}) }
+})
+
+app.get('/api/agents/:name/chat', (req,res)=>{
+  const name = req.params.name
+  res.json({messages: agentChats[name]||[]})
+})
+app.post('/api/agents/:name/chat', async (req,res)=>{
+  const name = req.params.name
+  const org = req.body && req.body.org || 'acme'
+  const text = req.body && req.body.text || ''
+  if(!agentChats[name]) agentChats[name]=[]
+  agentChats[name].push({role:'user', text})
+  try{
+    const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
+    const body = { org, task: text, agentHint: name }
+    const out = await fetchJSON(`${ORCH_URL}/schedule`, { method:'POST', headers, body })
+    // spawn if agent missing; orchestrator claim prefers agentHint
+    spawnAgent(org, text).catch(()=>{})
+    agentChats[name].push({role:'system', text:`scheduled task ${out.id||''} for ${name}`})
+    res.json({ok:true, task: out})
+  }catch(e){ res.status(502).json({error:String(e)}) }
+})
+
 // Proxy schedule to orchestrator
 app.post('/api/schedule', async (req,res)=>{
   try{
     const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
-    const body = { org: req.body && req.body.org, task: req.body && req.body.task }
+    const body = { org: req.body && req.body.org, task: req.body && req.body.task, agentHint: req.body && req.body.agentHint }
     if(!body.org || !body.task) return res.status(400).json({error:'missing org/task'})
     const out = await fetchJSON(`${ORCH_URL}/schedule`, { method:'POST', headers, body })
+    res.json(out)
+  }catch(e){ res.status(502).json({error:String(e)}) }
+})
+
+// Proxy logs
+app.get('/api/taskLogs', async (req,res)=>{
+  try{
+    const id = req.query.id
+    const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
+    const out = await fetchJSON(`${ORCH_URL}/tasks/logs?id=${encodeURIComponent(id)}`, { headers })
+    res.json(out)
+  }catch(e){ res.status(502).json({error:String(e)}) }
+})
+app.get('/api/agentLogs', async (req,res)=>{
+  try{
+    const name = req.query.name
+    const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
+    const out = await fetchJSON(`${ORCH_URL}/agents/logs?name=${encodeURIComponent(name)}`, { headers })
     res.json(out)
   }catch(e){ res.status(502).json({error:String(e)}) }
 })

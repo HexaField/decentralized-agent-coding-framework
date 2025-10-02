@@ -29,27 +29,32 @@ A production-ready, decentralized, AI‑augmented development platform that secu
 - Memory & Context Plane (MCP): semantic context, logs, embeddings, PR metadata
 - Radicle + Obsidian: decentralized VCS and knowledge base integration
 
-## Progress
+## Progress (MVP)
 
-High‑level phases that map to the three parts of the system.
+What works today (local, single device):
 
-- [ ] Phase 1 — Resource Mesh + Dashboard
-  - [ ] Orchestrator image with API (health, capacity, schedule, evict, pods)
-  - [ ] Tailscale integration and ACLs
-  - [ ] Per‑org Kubernetes cluster discovery and registration
-  - [ ] AI‑enhanced dashboard (users, agents, tasks, PRs, logs)
+- Orchestrator (Go) with token-protected scheduling and in-memory state
+  - Endpoints: `/health`, `/tasks`, `/agents`, `POST /schedule`
+  - New agent APIs for MVP loop: `POST /tasks/claim`, `POST /tasks/update`, `POST /tasks/log`
+- Dashboard (Node/Express + SPA)
+  - Aggregates orchestrator state (`/api/state`), schedules tasks via proxy
+  - Embeds an agent’s code-server in an iframe via a safe reverse proxy
+- Agent (Go) container with real code-server runtime
+  - Downloads standalone code-server binary; password auth enabled
+  - Polls orchestrator, claims tasks for its org, runs stubs (Spec‑Kit + Radicle), updates status
+  - Exposes editor on 8443 with readiness/liveness probes
+- Kubernetes via k3d per org, with scripts to create clusters and deploy agents
 
-- [ ] Phase 2 — Agent Workflow
-  - [ ] Spec‑Kit task intake and dispatch
-  - [ ] Agent pod lifecycle (context build, code‑server, CLI workflows)
-  - [ ] PR automation with Radicle; review loop with humans/bots
-  - [ ] Streaming logs, status, and artifacts to dashboard/MCP
+End-to-end demo path:
+1) Start orchestrator + dashboard: see `src/README.md` quick start
+2) Create an org cluster and deploy an agent (e.g., `acme`)
+3) Schedule a task from the dashboard; the agent claims it, runs, and completes
+4) Open code-server directly or embedded in the dashboard (password default: `password`)
 
-- [ ] Phase 3 — Extended Workloads
-  - [ ] CI/CD ephemeral runners
-  - [ ] Data/ML jobs and vector indexing
-  - [ ] DocOps and security tooling
-  - [ ] Observability stack and artifact caches
+What’s next for MVP polish:
+- Dashboard auto-refresh (or SSE) to show live status changes without manual refresh
+- Persist and stream task logs to the dashboard
+- Basic persistence for orchestrator state
 
 ## Security by design
 
@@ -66,5 +71,4 @@ High‑level phases that map to the three parts of the system.
 - Backlog and status: `backlog.md`
 
 ## Status
-
-This repository tracks the specification and implementation of the system described above. See `plan.md` for detailed goals, interfaces, and dependencies.
+Active development on the MVP is underway. See `src/README.md` for the runnable demo, and `backlog.md` for detailed status and next steps. The long-term vision above remains, with MVP focusing on a simple schedule → execute → PR flow with live observability.

@@ -20,7 +20,7 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: /app
-    command: ["sh", "-lc", "npm install --omit=dev && node server/server.js"]
+    command: ["sh", "-lc", "apk add --no-cache bash curl kubectl && curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash && npm install --omit=dev && node server/server.js"]
     environment:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
       - ORCHESTRATOR_URL=http://mvp-orchestrator:8080
@@ -28,6 +28,8 @@ services:
     volumes:
       - ../dashboard:/app
       - ../state:/state
+      - ../scripts:/scripts:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:8090:8090"
     networks:
