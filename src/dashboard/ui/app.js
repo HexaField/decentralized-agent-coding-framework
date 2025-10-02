@@ -33,4 +33,18 @@ document.getElementById('schedule').onclick = async ()=>{
   document.getElementById('scheduleOut').textContent = JSON.stringify(res, null, 2)
   await main()
 }
+
+// Embed controls
+const embedFrame = document.getElementById('embedFrame')
+document.getElementById('embedLoad').onclick = ()=>{
+  const p = document.getElementById('embedPort').value.trim()
+  if(!p){ document.getElementById('embedStatus').textContent = 'Enter a local port'; return }
+  embedFrame.src = `/embed/local/${encodeURIComponent(p)}/`
+}
+document.getElementById('embedPing').onclick = async ()=>{
+  const p = document.getElementById('embedPort').value.trim()
+  if(!p){ document.getElementById('embedStatus').textContent = 'Enter a local port'; return }
+  const r = await fetch(`/api/embed/ping/${encodeURIComponent(p)}`).then(r=>r.json()).catch(e=>({error:String(e)}))
+  document.getElementById('embedStatus').textContent = JSON.stringify(r, null, 2)
+}
 main()

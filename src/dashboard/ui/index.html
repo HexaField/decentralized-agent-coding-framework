@@ -23,6 +23,14 @@
   <pre id="tasks"></pre>
   <h2>Latest PR</h2>
   <div id="pr"></div>
+  <h2>Embed Agent Editor</h2>
+  <div class="row">
+    <input id="embedPort" placeholder="local forward port (e.g., 8450)" />
+    <button id="embedLoad">Load in iframe</button>
+    <button id="embedPing">Ping</button>
+  </div>
+  <div id="embedStatus"></div>
+  <iframe id="embedFrame" style="width:100%;height:70vh;border:1px solid #ccc" src="about:blank"></iframe>
     <script src="app.js"></script>
   </body>
 </html>

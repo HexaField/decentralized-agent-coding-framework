@@ -10,6 +10,24 @@ const PORT = process.env.PORT || 8090
 const TOKEN = process.env.DASHBOARD_TOKEN || 'dashboard-secret'
 const ORCH_URL = process.env.ORCHESTRATOR_URL || 'http://mvp-orchestrator:8080'
 const ORCH_TOKEN = process.env.ORCHESTRATOR_TOKEN || process.env.DASHBOARD_TOKEN || ''
+const httpProxy = require('http-proxy')
+const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true })
+
+// Relax frame embedding for proxied responses
+proxy.on('proxyRes', (proxyRes, req, res) => {
+  try {
+    delete proxyRes.headers['x-frame-options']
+    delete proxyRes.headers['content-security-policy']
+    // Allow embedding in dashboard origin
+    res.setHeader('X-Frame-Options', 'ALLOWALL')
+  } catch (_) {}
+})
+proxy.on('error', (err, req, res) => {
+  try {
+    if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' })
+    res.end('proxy error: ' + String(err))
+  } catch (_) {}
+})
 
 function fetchJSON(url, opts={}){
   return new Promise((resolve,reject)=>{
@@ -37,7 +55,9 @@ function fetchJSON(url, opts={}){
 app.use('/ui', express.static(path.join(__dirname, '..', 'ui')))
 
 app.use((req,res,next)=>{
-  if(req.method !== 'GET'){
+  // Allow safe methods without token
+  const safe = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS'
+  if(!safe){
     if(req.headers['x-auth-token'] !== TOKEN) return res.status(401).json({error:'unauthorized'})
   }
   next()
@@ -78,8 +98,56 @@ app.post('/api/schedule', async (req,res)=>{
   }catch(e){ res.status(502).json({error:String(e)}) }
 })
 
+// Lightweight probe to check if a local port-forward is up
+app.get('/api/embed/ping/:port', (req,res)=>{
+  const port = Number(req.params.port)
+  if(!port || port < 1 || port > 65535) return res.status(400).json({error:'invalid port'})
+  const opts = { hostname: 'host.docker.internal', port, path: '/', method: 'HEAD' }
+  const reqx = http.request(opts, r=>{ res.json({ ok: r.statusCode, headers: r.headers }) })
+  reqx.on('error', err=> res.status(502).json({ error: String(err) }))
+  reqx.end()
+})
+
+// Proxy code-server via dashboard origin to allow iframe embedding
+app.all('/embed/local/:port/*', (req,res)=>{
+  const port = Number(req.params.port)
+  if(!port || port < 1 || port > 65535) return res.status(400).send('invalid port')
+  const target = `http://host.docker.internal:${port}`
+  req.url = req.originalUrl.replace(`/embed/local/${req.params.port}`, '') || '/'
+  proxy.web(req, res, { target, changeOrigin: true, xfwd: true, headers: { origin: target } }, err=>{
+    res.status(502).send(String(err))
+  })
+})
+
+// Also handle exact root without trailing path
+app.all('/embed/local/:port', (req,res)=>{
+  const port = Number(req.params.port)
+  if(!port || port < 1 || port > 65535) return res.status(400).send('invalid port')
+  const target = `http://host.docker.internal:${port}`
+  req.url = '/'
+  proxy.web(req, res, { target, changeOrigin: true, xfwd: true, headers: { origin: target } }, err=>{
+    res.status(502).send(String(err))
+  })
+})
+
 if (require.main === module) {
-  app.listen(PORT, ()=> console.log(`dashboard on :${PORT}`))
+  const server = app.listen(PORT, ()=> console.log(`dashboard on :${PORT}`))
+  // Proxy WebSocket upgrades for embed routes
+  server.on('upgrade', (req, socket, head) => {
+    try {
+      const url = new URL(req.url, 'http://localhost')
+      const m = url.pathname.match(/^\/embed\/local\/(\d+)(\/.*)?$/)
+      if (m) {
+        const port = Number(m[1])
+        const rest = m[2] || '/'
+        req.url = rest
+  const target = `http://host.docker.internal:${port}`
+  proxy.ws(req, socket, head, { target, changeOrigin: true, xfwd: true, headers: { origin: target } })
+        return
+      }
+    } catch (_) {}
+    socket.destroy()
+  })
 }
 
 module.exports = app
