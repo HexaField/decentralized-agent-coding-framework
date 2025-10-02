@@ -7,10 +7,22 @@
   </head>
   <body>
     <h1>MVP Dashboard</h1>
-    <div id="health">Loading…</div>
+  <div id="health">Loading…</div>
+  <button id="refresh">Refresh</button>
     <input id="cmd" placeholder="AI command bar" />
     <button id="run">Run</button>
     <pre id="out"></pre>
+    <h2>Schedule</h2>
+    <div class="row">
+      <input id="org" placeholder="org (e.g., acme)" />
+      <input id="task" placeholder="task text" />
+      <button id="schedule">Schedule</button>
+    </div>
+    <pre id="scheduleOut"></pre>
+  <h2>Tasks</h2>
+  <pre id="tasks"></pre>
+  <h2>Latest PR</h2>
+  <div id="pr"></div>
     <script src="app.js"></script>
   </body>
 </html>

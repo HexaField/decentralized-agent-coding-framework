@@ -26,7 +26,9 @@ This MVP runs a local orchestrator and agent pods across a Headscale/Tailscale m
    ./scripts/seed_demo_project.sh
 7. Deploy an agent:
    ./scripts/deploy_agent.sh acme "Hello world web task"
-8. Open the dashboard URL printed in step 5; click the agent → open code‑server.
+8. Open code‑server for the agent:
+   ./scripts/open_code_server.sh acme <agent-name>
+   Then browse http://127.0.0.1:8443 and use the password from CODE_SERVER_PASSWORD (default: password).
 
 ## Multi-device
 

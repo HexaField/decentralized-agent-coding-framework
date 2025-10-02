@@ -3,5 +3,14 @@
   "private": true,
   "dependencies": {
     "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "eslint": "^9.10.0",
+    "mocha": "^10.7.3",
+    "supertest": "^7.0.0"
+  },
+  "scripts": {
+    "lint": "eslint server ui --ext .js",
+    "test": "mocha --reporter spec \"server/**/*.test.js\""
   }
 }

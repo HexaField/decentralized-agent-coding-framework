@@ -45,9 +45,10 @@ Repo layout of interest:
 - [x] Server: Express with `/api/health`, `/api/state`, `/api/command`
 - [x] UI: simple SPA served at `/ui` (health view)
 - [x] Fixed ESM/CJS mismatch; now CommonJS and builds/run via Compose
-- [ ] Wire Dashboard -> Orchestrator calls for live data (state/tasks)
-- [ ] Show agent/task events in UI; display last PR link from state
-- [ ] Add minimal tests (supertest) and linting (eslint/prettier)
+- [x] Wire Dashboard -> Orchestrator calls for live data (state/tasks)
+- [x] Show task events in UI and display last PR link from `/state`
+- [x] Add minimal tests (supertest/mocha) and linting (eslint)
+ - [x] Add schedule form in UI and server proxy to orchestrator
 
 ## Phase 4 — Agent Image & Runtime (Go + editor)
 - [x] Go agent binary builds; stubs for:
@@ -58,9 +59,9 @@ Repo layout of interest:
 - [x] Resilient editor service on :8443
   - [x] Attempted code-server install (blocked by Node 22 requirement)
   - [x] Fallback to `python3 -m http.server 8443` to ensure demo works
-- [ ] Upgrade agent image to support code-server (Node 22 or alternate distro)
-- [ ] Gate editor with auth or token (if using fallback, add basic auth/proxy)
-- [ ] Include readiness/liveness probes
+ - [x] Upgrade agent image to support code-server (standalone binary, arch-aware)
+ - [x] Gate editor with auth or token (code-server password via CODE_SERVER_PASSWORD; fallback keeps header auth)
+ - [x] Include readiness/liveness probes for editor (:8443)
 
 ## Phase 5 — Kubernetes Workflow (k3d)
 - [x] Create per-org cluster (`create_org_cluster.sh`)
@@ -123,7 +124,7 @@ Repo layout of interest:
    - [x] `./src/scripts/create_org_cluster.sh demo`
    - [x] Build agent image and import to k3d; deploy with `./src/scripts/deploy_agent.sh demo "Build MVP demo"`
 3) Access agent workspace/editor port
-   - [x] `./src/scripts/open_code_server.sh demo <agent-name>` → browse http://127.0.0.1:8443 (fallback server)
+   - [x] `./src/scripts/open_code_server.sh demo <agent-name>` → browse http://127.0.0.1:8443 (code-server; default password: "password")
 4) Schedule a task to orchestrator (token required)
    - [x] `curl -X POST http://127.0.0.1:18080/schedule -H 'X-Auth-Token: <token>' -d '{"org":"acme","task":"demo"}'`
 
@@ -134,7 +135,7 @@ Notes:
 ---
 
 ## Top next priorities
-- [ ] Enable real code-server (upgrade to Node 22 in the agent image or alternate installation) and secure with a password
+- [ ] Improve agent readiness: ensure 200 /health before marking Ready (code-server can take a moment to start)
 - [ ] Dashboard show PR/task outputs from `/state` and orchestrator’s live task list
 - [ ] Expand orchestrator to full CRUD + persistence (and expose to dashboard)
 - [ ] PVC for agent `/state` with persistence; surface PR URL in dashboard

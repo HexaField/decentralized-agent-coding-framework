@@ -32,8 +32,18 @@ spec:
         - { name: ORG_NAME, value: "${ORG}" }
         - { name: TASK_TEXT, value: "${TASK}" }
         - { name: CODE_SERVER_PASSWORD, value: "password" }
+        - { name: CODE_SERVER_AUTH_HEADER, value: "X-Agent-Auth" }
+        - { name: CODE_SERVER_TOKEN, value: "agent-secret" }
         ports:
         - containerPort: 8443
+        readinessProbe:
+          tcpSocket: { port: 8443 }
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket: { port: 8443 }
+          initialDelaySeconds: 5
+          periodSeconds: 10
 ---
 apiVersion: v1
 kind: Service
