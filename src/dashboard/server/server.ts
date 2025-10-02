@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import express from 'express'
 import path from 'path'
 import fs from 'fs'
@@ -29,6 +30,26 @@ proxy.on('error', (err, req, res: any) => {
   } catch {}
 })
 
+// CORS: allow configured frontend origins (comma-separated via CORS_ORIGINS or FRONTEND_ORIGIN)
+const ALLOW_ORIGINS = (process.env.CORS_ORIGINS || process.env.FRONTEND_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+app.use((req, res, next) => {
+  const origin = (req.headers.origin as string) || ''
+  const allowStar = ALLOW_ORIGINS.includes('*')
+  const allowed = allowStar || (origin && ALLOW_ORIGINS.includes(origin))
+  if (allowed) {
+    res.setHeader('Vary', 'Origin')
+    res.setHeader('Access-Control-Allow-Origin', allowStar ? '*' : origin)
+    if (!allowStar) res.setHeader('Access-Control-Allow-Credentials', 'true')
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token')
+    if (req.method === 'OPTIONS') { res.status(204).end(); return }
+  }
+  next()
+})
+
 function fetchJSON(url: string, opts: { method?: string; headers?: Record<string, string>; body?: any } = {}): Promise<any>{
   return new Promise((resolve,reject)=>{
     const u = new URL(url)
@@ -58,14 +79,23 @@ const agentChats: Record<string, Array<{role:'user'|'assistant'|'system', text:s
 
 // __dirname replacement for ESM
 const here = path.dirname(new URL(import.meta.url).pathname)
-// Serve built UI if available (Vite build outputs to ui/dist)
-const builtUiDir = path.join(here, '..', 'ui', 'dist')
-const srcUiDir = path.join(here, '..', 'ui')
-if (fs.existsSync(builtUiDir)) {
-  app.use('/ui', express.static(builtUiDir))
+// If UI_DEV=1, proxy /ui to the Vite dev server (no build needed)
+const UI_DEV = process.env.UI_DEV === '1'
+if (UI_DEV) {
+  const viteTarget = process.env.VITE_DEV_URL || 'http://localhost:5173'
+  app.use('/ui', (req, res) => {
+    proxy.web(req, res, { target: viteTarget, changeOrigin: true, xfwd: true })
+  })
 } else {
-  // Fallback: serve raw UI sources (useful before first build)
-  app.use('/ui', express.static(srcUiDir))
+  // Serve built UI if available (Vite build outputs to ui/dist)
+  const builtUiDir = path.join(here, '..', 'ui', 'dist')
+  const srcUiDir = path.join(here, '..', 'ui')
+  if (fs.existsSync(builtUiDir)) {
+    app.use('/ui', express.static(builtUiDir))
+  } else {
+    // Fallback: serve raw UI sources (useful before first build)
+    app.use('/ui', express.static(srcUiDir))
+  }
 }
 
 // Reverse proxy to embed local editors (HTTP)
@@ -227,6 +257,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   server.on('upgrade', (req: any, socket, head) => {
     try {
       const url = new URL(req.url, 'http://localhost')
+      if (UI_DEV && url.pathname.startsWith('/ui')) {
+        const target = process.env.VITE_DEV_URL || 'http://localhost:5173'
+        proxy.ws(req, socket, head, { target, changeOrigin: true, xfwd: true, headers: { origin: target } })
+        return
+      }
       const m = url.pathname.match(/^\/embed\/local\/(\d+)(\/.*)?$/)
       if (m) {
         const port = Number(m[1])
