@@ -2,15 +2,71 @@ package main
 
 import (
     "encoding/json"
+    "errors"
     "io"
     "log"
     "net/http"
     "os"
+    "sync"
+    "time"
 )
 
 type Health struct {
     Status string `json:"status"`
     Host   string `json:"host"`
+}
+
+type Task struct {
+    ID        string    `json:"id"`
+    Org       string    `json:"org"`
+    Text      string    `json:"text"`
+    Status    string    `json:"status"`
+    AgentHint string    `json:"agentHint,omitempty"`
+    CreatedAt time.Time `json:"createdAt"`
+}
+
+type Agent struct {
+    Name   string            `json:"name"`
+    Org    string            `json:"org"`
+    Labels map[string]string `json:"labels,omitempty"`
+    Status string            `json:"status"`
+}
+
+var (
+    tasksMu sync.RWMutex
+    tasks   = make(map[string]Task)
+
+    agentsMu sync.RWMutex
+    agents   = make(map[string]Agent)
+)
+
+func bearerOrHeaderToken(r *http.Request) string {
+    // Prefer header X-Auth-Token, fallback to Authorization: Bearer <token>
+    if t := r.Header.Get("X-Auth-Token"); t != "" { return t }
+    if auth := r.Header.Get("Authorization"); auth != "" {
+        const p = "Bearer "
+        if len(auth) > len(p) && auth[:len(p)] == p { return auth[len(p):] }
+    }
+    return ""
+}
+
+func requireToken(next http.HandlerFunc, envVar string) http.HandlerFunc {
+    required := os.Getenv(envVar)
+    return func(w http.ResponseWriter, r *http.Request) {
+        if required == "" { next(w, r); return }
+        if token := bearerOrHeaderToken(r); token == required {
+            next(w, r)
+            return
+        }
+        http.Error(w, "unauthorized", http.StatusUnauthorized)
+    }
+}
+
+func decodeJSON[T any](r *http.Request, v *T) error {
+    b, err := io.ReadAll(r.Body)
+    if err != nil { return err }
+    if len(b) == 0 { return errors.New("empty body") }
+    return json.Unmarshal(b, v)
 }
 
 func registerHandlers(mux *http.ServeMux) {
@@ -29,18 +85,29 @@ func registerHandlers(mux *http.ServeMux) {
         writeJSON(w, map[string]any{"clusters": clusters})
     })
 
-    mux.HandleFunc("/schedule", func(w http.ResponseWriter, r *http.Request) {
+    mux.HandleFunc("/schedule", requireToken(func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
-        body, _ := io.ReadAll(r.Body)
-        log.Printf("schedule request: %s", string(body))
-        writeJSON(w, map[string]any{"status":"scheduled","agent":"agent-demo"})
-    })
+        var req struct { Org string `json:"org"`; Task string `json:"task"`; AgentHint string `json:"agentHint,omitempty"` }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Org == "" || req.Task == "" { http.Error(w, "missing org/task", 400); return }
+        id := time.Now().Format("20060102-150405.000")
+        t := Task{ID: id, Org: req.Org, Text: req.Task, Status: "scheduled", AgentHint: req.AgentHint, CreatedAt: time.Now()}
+        tasksMu.Lock(); tasks[id] = t; tasksMu.Unlock()
+        log.Printf("scheduled task id=%s org=%s text=%q", id, req.Org, req.Task)
+        writeJSON(w, t)
+    }, "ORCHESTRATOR_TOKEN"))
 
     mux.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
-        writeJSON(w, []any{})
+        tasksMu.RLock(); defer tasksMu.RUnlock()
+        out := make([]Task, 0, len(tasks))
+        for _, t := range tasks { out = append(out, t) }
+        writeJSON(w, out)
     })
     mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
-        writeJSON(w, []any{})
+        agentsMu.RLock(); defer agentsMu.RUnlock()
+        out := make([]Agent, 0, len(agents))
+        for _, a := range agents { out = append(out, a) }
+        writeJSON(w, out)
     })
 }
 

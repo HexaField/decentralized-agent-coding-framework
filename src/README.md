@@ -20,6 +20,8 @@ This MVP runs a local orchestrator and agent pods across a Headscale/Tailscale m
    ./scripts/create_org_cluster.sh acme
 5. Start orchestrator + dashboard:
    ./scripts/start_orchestrator.sh
+   - Orchestrator: http://127.0.0.1:18080/health
+   - Dashboard: http://127.0.0.1:8090/ui
 6. Seed demo project:
    ./scripts/seed_demo_project.sh
 7. Deploy an agent:
@@ -36,6 +38,11 @@ Run the same steps on 2–3 machines. Edit `orchestrator/configs/orchestrator.ex
 - Agent (Go) with code-server runtime and simple workflow hook
 - Dashboard (Node/Express + static UI) listing users, agents, devices, clusters, tasks, PRs
 - Spec‑Kit and Radicle stubs for tasks and PRs
+
+## Docs
+
+- Architecture overview: `../assets/ARCHITECTURE.md`
+- Backlog and status: `../backlog.md`
 
 ## Teardown
 

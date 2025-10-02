@@ -62,6 +62,8 @@ High‑level phases that map to the three parts of the system.
 
 - High-level requirements: `requirements.md`
 - Implementation plan (RFC 2119 + TDD/CI): `implementation-plan.md`
+- Architecture overview and flow traces: `assets/ARCHITECTURE.md`
+- Backlog and status: `backlog.md`
 
 ## Status
 
