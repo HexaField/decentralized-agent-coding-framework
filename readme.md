@@ -31,30 +31,34 @@ A production-ready, decentralized, AI‑augmented development platform that secu
 
 ## Progress (MVP)
 
-What works today (local, single device):
+What works today (local, single device)
 
-- Orchestrator (Go) with token-protected scheduling and in-memory state
+- Orchestrator (Go)
   - Endpoints: `/health`, `/tasks`, `/agents`, `POST /schedule`
-  - New agent APIs for MVP loop: `POST /tasks/claim`, `POST /tasks/update`, `POST /tasks/log`
-- Dashboard (Node/Express + SPA)
-  - Aggregates orchestrator state (`/api/state`), schedules tasks via proxy
-  - Embeds an agent’s code-server in an iframe via a safe reverse proxy
-- Agent (Go) container with real code-server runtime
-  - Downloads standalone code-server binary; password auth enabled
-  - Polls orchestrator, claims tasks for its org, runs stubs (Spec‑Kit + Radicle), updates status
-  - Exposes editor on 8443 with readiness/liveness probes
-- Kubernetes via k3d per org, with scripts to create clusters and deploy agents
+  - Agent loop APIs: `POST /tasks/claim`, `POST /tasks/update`, `POST /tasks/log`
+  - In‑memory stores; SSE streams for tasks/agents; log buffers and fetch endpoints
+  - Token auth for mutations
+- Dashboard (Node/Express + SolidJS)
+  - TypeScript server with `/api/health`, `/api/state`, `/api/command`
+  - Proxies to orchestrator, SSE proxy for logs, streaming chat that schedules tasks
+  - Reverse proxy to embed local editors with WS upgrades
+  - Dev without builds: tsx for server, Vite dev for UI (proxied at `/ui`)
+- Agent (Go)
+  - Polls, claims, executes stubs (Spec‑Kit + Radicle), posts status/logs
+  - Editor on 8443 (code‑server or Python fallback), password/header auth; probes
+- Kubernetes via k3d
+  - Scripts to create per‑org clusters, deploy agents, import images, and port‑forward editor
 
-End-to-end demo path:
-1) Start orchestrator + dashboard: see `src/README.md` quick start
-2) Create an org cluster and deploy an agent (e.g., `acme`)
-3) Schedule a task from the dashboard; the agent claims it, runs, and completes
-4) Open code-server directly or embedded in the dashboard (password default: `password`)
+Demo path
+1) Start orchestrator (compose or local)
+2) From `src/dashboard`, run `npm run dev` and open http://127.0.0.1:8090/ui
+3) Create an org cluster and deploy an agent (e.g., `acme`)
+4) Use Org Chat to schedule a task; watch logs stream; embed the editor via local forward port
 
-What’s next for MVP polish:
-- Dashboard auto-refresh (or SSE) to show live status changes without manual refresh
-- Persist and stream task logs to the dashboard
-- Basic persistence for orchestrator state
+What’s next
+- Persist tasks/agents/logs and provenance; planner/dispatcher
+- LLM + MCP connector integration for chat/tools
+- PVC for agent state and artifact surfacing in dashboard
 
 ## Security by design
 
@@ -71,4 +75,4 @@ What’s next for MVP polish:
 - Backlog and status: `backlog.md`
 
 ## Status
-Active development on the MVP is underway. See `src/README.md` for the runnable demo, and `backlog.md` for detailed status and next steps. The long-term vision above remains, with MVP focusing on a simple schedule → execute → PR flow with live observability.
+Active development on the MVP is underway. See `backlog.md` for the epics and feature breakdown, including what’s complete and upcoming.

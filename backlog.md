@@ -1,176 +1,143 @@
-# Project Backlog and Status
+# Backlog — Epics and Features
 
-A living, end-to-end backlog tracking what’s built, what’s verified, and what’s next for the distributed AI-augmented dev lab MVP.
+A concise, end‑to‑end view of what’s done and what’s next for the decentralized, AI‑augmented dev lab MVP.
 
-Current quick links:
-- Orchestrator: http://127.0.0.1:18080/health (bound on 0.0.0.0 for k3d pods)
+Quick links
+- Orchestrator: http://127.0.0.1:18080/health
 - Dashboard: http://127.0.0.1:8090/ui (API: /api/health)
-- Agent (local port-forward): http://127.0.0.1:8443/
+- Agent (local forward): http://127.0.0.1:8443/
 
-Repo layout of interest:
-- Orchestrator: `src/orchestrator/app`, Dockerfile: `src/docker/orchestrator.Dockerfile`
-- Dashboard: `src/dashboard/server`, UI: `src/dashboard/ui`, package.json: `src/dashboard/package.json`
-- Agent: `src/agent/app` (Go app + code-server fallback), Dockerfile: `src/docker/agent.Dockerfile`
-- Compose (local services): `src/compose/docker-compose.orchestrator.yml`
-- Kubernetes base: `src/k8s/base`
-- Scripts: `src/scripts/*.sh`
-
----
-
-## Phase 0 — Planning & Docs
-- [x] Choose Talos for K8s management (future) and Headscale for Tailnet control (mesh)
-- [x] Update docs to reflect platform choices (`implementation-plan.md`, `plan.md`, `readme.md`, `requirements.md`)
-- [x] Add architecture overview and request/flow traces (textual)
-- [ ] Add rendered architecture diagram image (SVG/PNG)
-
-## Phase 1 — Local Dev Environment
-- [x] Ensure Docker Desktop and Compose are assumed prerequisites
-- [x] Script: `install_prereqs.sh` installs k3d, kubectl (if needed), tailscale
-- [x] Script: `create_org_cluster.sh` creates k3d cluster per org (org-<name>) and applies base namespace/RBAC
-- [x] Script: `delete_org_cluster.sh` removes cluster
-- [x] Script: `start_orchestrator.sh` runs compose for orchestrator+dashboard
-- [x] Add Makefile shortcuts (build, up, down, logs, clean)
-- [x] Add .env/.env.example values for tokens and default org
-
-## Phase 2 — Orchestrator Service (Go)
-- [x] Minimal HTTP server and handlers (`/health`, `/peers`, `/clusters`, `/schedule`, `/tasks`, `/agents`)
-- [x] Buildable container (`src/docker/orchestrator.Dockerfile`)
-- [x] Exposed on host 18080→container 8080 via Compose
-- [x] Implement minimal in-memory models for tasks/agents (list + schedule)
-- [ ] Expand to full CRUD and persistence
-- [x] Implement token auth (use `ORCHESTRATOR_TOKEN`) for schedule/mutations
-- [x] Add unit tests and basic request validation
- - [x] Add agent loop APIs: `POST /tasks/claim`, `POST /tasks/update`, `POST /tasks/log`
-
-## Phase 3 — Dashboard Service (Node/Express + SPA)
-- [x] Server: Express with `/api/health`, `/api/state`, `/api/command`
-- [x] UI: simple SPA served at `/ui` (health view)
-- [x] Fixed ESM/CJS mismatch; now CommonJS and builds/run via Compose
-- [x] Wire Dashboard -> Orchestrator calls for live data (state/tasks)
-- [x] Show task events in UI and display last PR link from `/state`
-- [x] Add minimal tests (supertest/mocha) and linting (eslint)
- - [x] Add schedule form in UI and server proxy to orchestrator
- - [x] Embed agent code-server in iframe via reverse proxy (with WS support)
- - [x] Distinct UX: Scheduler vs Global Chat (separate intents and flows)
- - Global Chat
-    - [x] LLM-backed, org-aware responses (SSE streaming)
-    - [x] Chat can initiate tasks via orchestrator; surface provenance in messages
-    - [ ] MCP tool connectors for assistant (org context/tools)
-    - [x] Guardrails and simple system prompt per org
-
-## Phase 4 — Agent Image & Runtime (Go + editor)
-- [x] Go agent binary builds; stubs for:
-  - [x] MCP context: `PullContext()`
-  - [x] Spec-Kit task run stub: `RunTask()` (invokes `src/spec-kit/cli_wrapper.sh`)
-  - [x] Radicle PR stub: `OpenPR()` (invokes `src/radicle/cli_wrapper.sh`)
-- [x] Container image builds with startup script and editor service
-- [x] Resilient editor service on :8443
-  - [x] Attempted code-server install (blocked by Node 22 requirement)
-  - [x] Fallback to `python3 -m http.server 8443` to ensure demo works
- - [x] Upgrade agent image to support code-server (standalone binary, arch-aware)
- - [x] Gate editor with auth or token (code-server password via CODE_SERVER_PASSWORD; fallback keeps header auth)
- - [x] Include readiness/liveness probes for editor (:8443)
- - [x] Agent polls orchestrator, claims tasks by org, posts status/log updates
- - [ ] MCP client adapters available to agent for local tools (optional; see orchestrator-led MCP below)
-
-## Phase 5 — Kubernetes Workflow (k3d)
-- [x] Create per-org cluster (`create_org_cluster.sh`)
-- [x] Deploy agent (`deploy_agent.sh`), fixed YAML indentation and image policy
-- [x] Image import to k3d + imagePullPolicy Never for local builds
-- [x] Port-forward agent service on 8443 (`open_code_server.sh`)
-- [ ] PVC for `/state` and mount in agent; wire to dashboard to read PR/task outputs
-- [ ] Resource limits/requests and basic PodSecurity settings
-- [ ] Switch imagePullPolicy to IfNotPresent for dev, Always for CI/pushed images
-
-## Phase 6 — Mesh Networking (Headscale/Tailscale)
-- [x] Scripts reference Headscale/Tailscale join
-- [ ] Make `tailscale_join.sh` robust: ensure tailscaled running; user guidance for macOS
-- [ ] Add optional auto-start tailscaled guidance or a no-mesh “local-only” mode
-- [ ] Document Headscale server bootstrap and ACLs
-
-## Phase 7 — Integrations & Planning
-- [x] Spec-Kit CLI stub invoked from agent
-- [x] Radicle PR stub writes last PR URL into `/state/radicle/last_pr.json`
-- [ ] Dashboard shows latest PR link and task results from `/state`
-- [ ] Orchestrator persists task metadata and exposes to dashboard
-- [ ] Add simple “task dispatch” flow from dashboard to orchestrator to agent
- - [ ] LLM + MCP integration for Global Chat (server-side):
-    - [ ] MCP registry and connectors for org context (files, repos, knowledge)
-    - [ ] LLM provider wiring (env-based); per-org context injection
-    - [ ] Chat-to-Task bridge: assistant can create tasks via orchestrator with rationale captured
- - [ ] Orchestrator Planner/Dispatcher:
-    - [ ] Decide agent selection or decompose tasks into sub-tasks (DAG)
-    - [ ] Track parent/child task relations and provenance
-    - [ ] Execute task graph and update statuses/logs; retry basics
-    - [ ] Persist plan state; expose to dashboard
-
-## Phase 8 — Dev Experience & Scripts
-- [x] `seed_demo_project.sh` creates a local demo repo under `src/state/demo-repo`
-- [x] `demo_run.sh` present (lightweight smoke path)
-- [ ] Validate and enrich `demo_run.sh` to cover full E2E: seed → schedule → agent → PR stub → dashboard
-- [ ] Add `logs` helpers and better error messages to scripts
-- [ ] Add platform notes for macOS/Linux differences
-
-## Phase 9 — Observability & Ops
-- [ ] Aggregate logs and expose via dashboard (tail recent agent logs)
-- [ ] Add Prometheus-style metrics endpoints
-- [ ] Add health/readiness endpoints to agent and probes in manifests
-- [ ] Minimal tracing hooks for request/response across components
-
-## Phase 10 — Security & Config
-- [ ] Enforce tokens on orchestrator and dashboard mutation endpoints
-- [ ] Centralize secrets/env handling (.env; Kubernetes Secrets)
-- [ ] HTTPS/TLS termination strategy for public surfaces (dev vs prod)
-- [ ] Harden container images (non-root user; drop caps) and add SBOM
- - [ ] Manage LLM provider credentials and scopes; audit chat-initiated actions
-
-## Phase 11 — CI/CD & Releases
-- [ ] GitHub Actions: build/test for Go + Node; lint; container builds
-- [ ] Push images to a registry (ghcr.io); tag by branch/version
-- [ ] Automated k3d import for local dev; Helm chart or Kustomize overlays for prod
-- [ ] Versioned releases and changelog
-
-## Phase 12 — Talos Integration (next milestone)
-- [ ] Document Talos adoption path; replace k3d with Talos-managed clusters
-- [ ] Cluster API or automation steps; bootstrap scripts
-- [ ] Validate Headscale/Tailscale across Talos clusters
+Repository map
+- Orchestrator: `src/orchestrator/app`
+- Dashboard server: `src/dashboard/server`
+- Dashboard UI: `src/dashboard/ui`
+- Agent: `src/agent/app`
+- Compose/K8s/Scripts: `src/compose`, `src/k8s`, `src/scripts`
 
 ---
 
-## Current Working Demo Path (validated)
-1) Bring up local services
-   - [x] `src/compose/docker-compose.orchestrator.yml` → orchestrator on :18080, dashboard on :8090
-2) Create an org cluster and deploy an agent
-   - [x] `./src/scripts/create_org_cluster.sh demo`
-   - [x] Build agent image and import to k3d; deploy with `./src/scripts/deploy_agent.sh demo "Build MVP demo"`
-3) Access agent workspace/editor port
-   - [x] `./src/scripts/open_code_server.sh demo <agent-name>` → browse http://127.0.0.1:8443 (code-server; default password: "password")
-4) Schedule a task to orchestrator (token required) — agent claims and executes
-   - [x] From dashboard UI or curl: `POST /schedule` (token in `X-Auth-Token`)
-5) Optional: Embed code-server in dashboard (enter local forward port, then Load)
-6) Global Chat
-   - Use “Ask (LLM)” to stream assistant responses; assistant may create a task automatically when appropriate
-   - Use “Send (schedule)” to create a task directly without chat reasoning
+## Epic A — Foundations & Dev Experience
+Completed
+- Workspace scripts for k3d clusters, deploy, and port‑forwards
+- Minimal Makefile shortcuts
+- ESLint + Prettier
+- Vitest (baseline; tests TBD)
+- Shared env file `.env` (server + client) and dotenv loading
+- Dev flow without builds: tsx for server, Vite dev for UI (proxied via server)
 
-Notes:
-- Orchestrator /health and dashboard /api/health both return `{ "status": "ok" }`.
-- Agent flow runs stubs and keeps serving on 8443; code-server uses password auth; fallback HTTP server enforces a header token.
+Upcoming
+- Add smoke tests for dashboard server routes and SSE
+- Add example `.env.example` sync and validation
+
+## Epic B — Orchestrator (Go)
+Completed
+- Endpoints: `/health`, `/tasks`, `/agents`, `POST /schedule`
+- Agent loop APIs: `POST /tasks/claim`, `POST /tasks/update`, `POST /tasks/log`
+- In‑memory task/agent stores
+- SSE streams: `/events/tasks`, `/events/agents`
+- Task/agent log buffers: `/tasks/logs`, `/agents/logs`
+- Token auth for mutating endpoints
+
+Upcoming
+- Persistence for tasks/agents/logs (disk or DB)
+- Full task CRUD, provenance, parent/child relations
+- Planner/dispatcher (selection, decomposition, DAG execution, retries)
+- Metrics endpoint
+
+## Epic C — Agent Runtime (Go + Editor)
+Completed
+- Agent loop claims tasks, posts status and logs
+- Editor runtime on :8443 (code‑server or Python fallback)
+- Health probes and basic auth (password or header)
+
+Upcoming
+- MCP client adapters for local tools
+- PVC for `/state`; surface PR/artifacts to dashboard
+- Resource limits/requests and PodSecurity configuration
+
+## Epic D — Dashboard Server (Node/Express)
+Completed
+- TypeScript server with routes: `/api/health`, `/api/state`, `/api/command`
+- Proxies to orchestrator; dev `/ui` proxy to Vite
+- SSE proxy endpoints: `/api/stream/task`, `/api/stream/agent`
+- Log fetch endpoints: `/api/taskLogs`, `/api/agentLogs`
+- Streaming chat endpoint `/api/chat/stream` that schedules tasks
+- Reverse proxy for embedded editors: `/embed/local/:port` (with WS upgrades)
+- CORS (configurable via CORS_ORIGINS/FRONTEND_ORIGIN)
+
+Upcoming
+- LLM integration for chat responses (provider env + guardrails)
+- Harden auth on mutating routes; tokens and rate‑limits
+- Vitest route tests and SSE tests
+
+## Epic E — Dashboard UI (Vite + SolidJS + Tailwind)
+Completed
+- SolidJS app (Org Chat + Tasks + Agents + Editor embed)
+- Live logs via EventSource (tasks/agents); chat streams via SSE
+- Backend base URL selection (VITE_SERVER_URL or same‑host mapping)
+
+Upcoming
+- UI polish, error states, and retries
+- Agent controls (ensure/spawn) and PR surfacing
+- Solid router and feature tabs
+
+## Epic F — Kubernetes & Mesh
+Completed
+- k3d cluster creation/deletion scripts
+- Agent deployment script; image import for local builds
+- Port‑forward helper for editor
+
+Upcoming
+- Talos/Headscale integration path and docs
+- Switch imagePullPolicy based on dev/CI
+
+## Epic G — Observability & Ops
+Completed
+- SSE log streaming path from agent → orchestrator → dashboard → UI
+
+Upcoming
+- Log aggregation and persistence
+- Prometheus metrics; basic tracing hooks
+
+## Epic H — Security & Config
+Completed
+- Tokened orchestrator mutations
+- CORS and frame/csp header handling for embeds
+- Shared `.env` for server and client
+
+Upcoming
+- mTLS strategy (or service mesh) between services
+- TLS termination strategy for public surfaces
+- Secrets management and SBOM/hardening for images
+
+## Epic I — Integrations (LLM, MCP, Radicle, Spec‑Kit)
+Completed
+- Spec‑Kit and Radicle stubs invoked from agent
+
+Upcoming
+- LLM provider wiring for chat
+- MCP registry and connectors (org tools/context)
+- Persist and surface PR links and artifacts in dashboard
+- Chat‑to‑Task bridge with rationale capture
 
 ---
 
-## Top next priorities
-- [ ] Global Chat MCP connectors (server-side) to provide tools/context via MCP
-- [ ] Orchestrator planner/dispatcher to figure out how to solve scheduled tasks (agent selection, decomposition, DAG execution)
-- [ ] Persist task logs and expose `/tasks/:id/logs` (SSE live-tail done)
-- [ ] Expand orchestrator task CRUD + persistence and expose to dashboard (plans, provenance)
-- [ ] PVC for agent `/state` and surface PR URL/artifacts in dashboard
-- [ ] CI pipeline for build/test and container publish; switch imagePullPolicy accordingly
+## Current demo path
+1) Orchestrator up (local or compose) → http://127.0.0.1:18080/health
+2) Dashboard dev (from `src/dashboard`): `npm run dev` → http://127.0.0.1:8090/ui
+3) Create an org cluster and deploy an agent; port‑forward editor :8443
+4) Use Org Chat to schedule a task (streams) and watch logs live
+5) Optionally embed the editor by entering the local forward port
+
+Notes
+- Orchestrator and dashboard health return `{ "status": "ok" }`.
+- Editor auth is enabled; fallback server uses header token.
 
 ---
 
-## Changelog for this backlog
-- 2025-10-02: Initial backlog created with status reflecting the working quick-start and identified next steps.
-- 2025-10-02: Phase 0–2 completed: architecture doc added, Makefile/.env updated, orchestrator auth + in-memory tasks and tests implemented; schedule endpoint verified.
- - 2025-10-02: Added agent claim/update/log APIs; agent now polls and executes tasks; dashboard can embed code-server via proxy with WS support.
- - 2025-10-02: Reprioritized around distinct Scheduler vs Global Chat. Planned LLM (+ MCP) chat that is org-aware and can initiate tasks, and an orchestrator planner/dispatcher to solve tasks autonomously.
- - 2025-10-02: Implemented Global Chat streaming (SSE) with optional LLM provider, guardrails, and task initiation; UI logs switched to SSE live-tail for agents and tasks; dashboard tests added.
+## Next priorities
+- Persist tasks/agents/logs; expose provenance
+- Planner/dispatcher (selection, decomposition, DAG)
+- LLM + MCP integration for useful chat/tooling
+- PVC for agent state and artifact surfacing
+- CI pipeline for build/test and image publish
