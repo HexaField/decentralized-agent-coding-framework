@@ -1,3 +1,4 @@
+version: "3.8"
 services:
   orchestrator:
     image: mvp-orchestrator:${IMAGE_TAG:-latest}
@@ -12,8 +13,8 @@ services:
     volumes:
       - ../orchestrator/configs:/app/configs:ro
       - ../state:/state
-  - ../scripts:/scripts:ro
-  - /var/run/docker.sock:/var/run/docker.sock
+      - ../scripts:/scripts:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "0.0.0.0:18080:8080"
     networks:
@@ -22,15 +23,18 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: /app
-  command: ["sh", "-lc", "npm install --omit=dev && npx tsx server/server.ts"]
+    command: ["sh", "-lc", "npm ci && npx tsx server/server.ts"]
     environment:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
       - ORCHESTRATOR_URL=http://mvp-orchestrator:8080
       - ORCHESTRATOR_TOKEN=${ORCHESTRATOR_TOKEN}
+      - UI_DEV=0
+      - LOCAL_ENSURE=0
     volumes:
       - ../dashboard:/app
+      - ../scripts:/scripts:ro
       - ../state:/state
-  # no direct cluster control from dashboard in dev anymore
+    # no direct cluster control from dashboard in dev anymore
     ports:
       - "127.0.0.1:8090:8090"
     networks:

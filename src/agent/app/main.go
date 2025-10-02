@@ -3,6 +3,7 @@ package main
 import (
     "bytes"
     "encoding/json"
+    "fmt"
     "log"
     "net/http"
     "os"
@@ -17,6 +18,12 @@ func main() {
     if orchURL == "" { orchURL = "http://host.k3d.internal:18080" }
     log.Printf("agent starting for org=%s", org)
     client := &http.Client{ Timeout: 10 * time.Second }
+    // connectivity check
+    if err := getHealth(client, orchURL); err != nil {
+        log.Printf("orchestrator health check failed: %v", err)
+    } else {
+        log.Printf("connected to orchestrator at %s", orchURL)
+    }
     // register once
     postJSON(client, orchURL+"/agents/register", orchTok, map[string]any{"name": agentID, "org": org})
     for {
@@ -29,7 +36,7 @@ func main() {
         req.Header.Set("Content-Type","application/json")
         if orchTok != "" { req.Header.Set("X-Auth-Token", orchTok) }
         resp, err := client.Do(req)
-        if err != nil { time.Sleep(3*time.Second); continue }
+        if err != nil { log.Printf("claim error: %v", err); time.Sleep(3*time.Second); continue }
     var claimed map[string]any
         json.NewDecoder(resp.Body).Decode(&claimed); resp.Body.Close()
     // detect presence of a claimed task by id field
@@ -81,5 +88,22 @@ func postJSON(client *http.Client, url, token string, body any) {
     req,_ := http.NewRequest("POST", url, bytes.NewReader(b))
     req.Header.Set("Content-Type","application/json")
     if token != "" { req.Header.Set("X-Auth-Token", token) }
-    client.Do(req)
+    resp, err := client.Do(req)
+    if err != nil {
+        log.Printf("POST %s error: %v", url, err)
+        return
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode >= 300 {
+        log.Printf("POST %s status: %s", url, resp.Status)
+    }
+}
+
+func getHealth(client *http.Client, orchURL string) error {
+    req, _ := http.NewRequest("GET", orchURL+"/health", nil)
+    resp, err := client.Do(req)
+    if err != nil { return err }
+    defer resp.Body.Close()
+    if resp.StatusCode >= 300 { return fmt.Errorf("status %s", resp.Status) }
+    return nil
 }

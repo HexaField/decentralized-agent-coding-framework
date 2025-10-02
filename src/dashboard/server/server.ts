@@ -5,6 +5,7 @@ import fs from 'fs'
 import http from 'http'
 import https from 'https'
 import httpProxy from 'http-proxy'
+import { execFile } from 'child_process'
 
 const app = express()
 app.use(express.json())
@@ -13,6 +14,7 @@ const PORT = Number(process.env.PORT || 8090)
 const TOKEN = process.env.DASHBOARD_TOKEN || 'dashboard-secret'
 const ORCH_URL = process.env.ORCHESTRATOR_URL || 'http://mvp-orchestrator:8080'
 const ORCH_TOKEN = process.env.ORCHESTRATOR_TOKEN || process.env.DASHBOARD_TOKEN || ''
+const LOCAL_ENSURE = process.env.LOCAL_ENSURE === '1'
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true })
 
 // Relax frame embedding for proxied responses
@@ -45,37 +47,70 @@ app.use((req, res, next) => {
     if (!allowStar) res.setHeader('Access-Control-Allow-Credentials', 'true')
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token')
-    if (req.method === 'OPTIONS') { res.status(204).end(); return }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end()
+      return
+    }
   }
   next()
 })
 
-function fetchJSON(url: string, opts: { method?: string; headers?: Record<string, string>; body?: any } = {}): Promise<any>{
-  return new Promise((resolve,reject)=>{
+function fetchJSON(
+  url: string,
+  opts: { method?: string; headers?: Record<string, string>; body?: any } = {}
+): Promise<any> {
+  return new Promise((resolve, reject) => {
     const u = new URL(url)
     const lib = u.protocol === 'https:' ? https : http
-    const req = lib.request({
-      hostname: u.hostname,
-      port: Number(u.port || (u.protocol==='https:'?443:80)),
-      path: u.pathname + (u.search||''),
-      method: opts.method||'GET',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers||{})
-    }, res=>{
-      let data=''
-      res.on('data', (d: any)=> data+=d)
-      res.on('end', ()=>{
-        try{ resolve(JSON.parse(data||'{}')) }catch(e){ reject(e) }
-      })
-    })
+    const req = lib.request(
+      {
+        hostname: u.hostname,
+        port: Number(u.port || (u.protocol === 'https:' ? 443 : 80)),
+        path: u.pathname + (u.search || ''),
+        method: opts.method || 'GET',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {}),
+      },
+      (res) => {
+        let data = ''
+        res.on('data', (d: any) => (data += d))
+        res.on('end', () => {
+          const status = res.statusCode || 0
+          const ct = String((res.headers as any)['content-type'] || '')
+          const isJSON = ct.includes('application/json')
+          if (status >= 400) {
+            // Return a helpful error including status and body text
+            const snippet = (data || '').slice(0, 200)
+            return reject(new Error(`${status} ${snippet}`))
+          }
+          if (!data) return resolve({})
+          if (isJSON) {
+            try {
+              return resolve(JSON.parse(data))
+            } catch (e) {
+              return reject(e)
+            }
+          }
+          // Fallback: return as text for non-JSON responses
+          return resolve({ text: data })
+        })
+      }
+    )
     req.on('error', reject)
-    if(opts.body){ req.write(typeof opts.body==='string'? opts.body : JSON.stringify(opts.body)) }
+    if (opts.body) {
+      req.write(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body))
+    }
     req.end()
   })
 }
 
 // In-memory chats
-const chats: { global: Array<{role:'user'|'assistant'|'system', text:string}> } = { global: [] }
-const agentChats: Record<string, Array<{role:'user'|'assistant'|'system', text:string}>> = {}
+const chats: { global: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> } = {
+  global: [],
+}
+const agentChats: Record<
+  string,
+  Array<{ role: 'user' | 'assistant' | 'system'; text: string }>
+> = {}
 
 // __dirname replacement for ESM
 const here = path.dirname(new URL(import.meta.url).pathname)
@@ -109,45 +144,90 @@ app.use('/embed/local/:port', (req, res) => {
   proxy.web(req, res, { target, changeOrigin: true, xfwd: true, headers: { origin: target } })
 })
 
-app.use((req,res,next)=>{
+app.use((req, res, next) => {
   const safe = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS'
-  if(!safe){ if(req.headers['x-auth-token'] !== TOKEN) return res.status(401).json({error:'unauthorized'}) }
+  if (!safe) {
+    if (
+      process.env.NODE_ENV !== 'production' &&
+      (req.path.startsWith('/api/debug') || req.path.startsWith('/api/ensure'))
+    ) {
+      return next()
+    }
+    if (req.headers['x-auth-token'] !== TOKEN)
+      return res.status(401).json({ error: 'unauthorized' })
+  }
   next()
 })
 
-app.get('/api/health', (req,res)=> res.json({status:'ok'}))
-app.get('/api/state', async (req,res)=>{
-  try{
-  const headers: Record<string,string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+app.get('/api/health', (req, res) => res.json({ status: 'ok' }))
+app.get('/api/state', async (req, res) => {
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
     const [tasks, agents] = await Promise.all([
       fetchJSON(`${ORCH_URL}/tasks`, { headers }),
       fetchJSON(`${ORCH_URL}/agents`, { headers }),
     ])
     let pr: any = null
-    try{
-      const p = path.join('/state','radicle','last_pr.json')
-      if(fs.existsSync(p)) pr = JSON.parse(fs.readFileSync(p,'utf8'))
-    }catch{}
-    res.json({ tasks, agents, clusters: [], prs: pr? [pr]: [] })
-  }catch(e){ res.status(200).json({ tasks: [], agents: [], clusters: [], prs: [], error: String(e) }) }
+    try {
+      const p = path.join('/state', 'radicle', 'last_pr.json')
+      if (fs.existsSync(p)) pr = JSON.parse(fs.readFileSync(p, 'utf8'))
+    } catch {}
+    res.json({ tasks, agents, clusters: [], prs: pr ? [pr] : [] })
+  } catch (e) {
+    res.status(200).json({ tasks: [], agents: [], clusters: [], prs: [], error: String(e) })
+  }
 })
 
-app.post('/api/command', (req,res)=>{ const q = (req.body&&req.body.q)||''; res.json({ok:true, echo:q}) })
+app.post('/api/command', (req, res) => {
+  const q = (req.body && req.body.q) || ''
+  res.json({ ok: true, echo: q })
+})
+
+// Ensure helper: local (dev) or orchestrator-backed
+async function ensureAgent(org: string, prompt: string) {
+  if (LOCAL_ENSURE) {
+    const deploy = path.resolve(here, '..', '..', 'scripts', 'deploy_agent.sh')
+    return new Promise((resolve, reject) => {
+    execFile('bash', [deploy, org, prompt], { env: process.env }, (err, stdout, stderr) => {
+        if (err) return reject(new Error((stdout || '') + (stderr || '') || String(err)))
+        resolve({ ok: true, output: String(stdout), mode: 'k3d' })
+    })
+    })
+  }
+  const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+  return fetchJSON(`${ORCH_URL}/agents/ensure`, { method: 'POST', headers, body: { org, prompt } })
+}
+
+// Public API for ensure (POST requires dashboard token header)
+app.post('/api/ensure', async (req, res) => {
+  try {
+    const org = (req.body && req.body.org) || 'acme'
+    const prompt = (req.body && req.body.prompt) || ''
+    const out = await ensureAgent(org, prompt)
+    res.json({ ok: true, ensure: out })
+  } catch (e) {
+    res.status(502).json({ ok: false, error: String(e) })
+  }
+})
 
 // Chat APIs
-app.get('/api/chat', (req,res)=>{ res.json({messages: chats.global}) })
-app.post('/api/chat', async (req,res)=>{
+app.get('/api/chat', (req, res) => {
+  res.json({ messages: chats.global })
+})
+app.post('/api/chat', async (req, res) => {
   const org = (req.body && req.body.org) || 'acme'
   const text = (req.body && req.body.text) || ''
-  chats.global.push({role:'user', text})
-  try{
-  const headers: Record<string,string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+  chats.global.push({ role: 'user', text })
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
     const body = { org, task: text }
-    const out = await fetchJSON(`${ORCH_URL}/schedule`, { method:'POST', headers, body })
-    await fetchJSON(`${ORCH_URL}/agents/ensure`, { method:'POST', headers, body: { org, prompt: text } }).catch(()=>({}))
-    chats.global.push({role:'system', text:`scheduled task ${out.id||''}`})
-    res.json({ok:true, task: out})
-  }catch(e){ res.status(502).json({error:String(e)}) }
+    const out = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
+    await ensureAgent(org, text).catch(() => ({}))
+    chats.global.push({ role: 'system', text: `scheduled task ${out.id || ''}` })
+    res.json({ ok: true, task: out })
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
+  }
 })
 
 // Proxy: task/agent logs and SSE streams expected by UI
@@ -167,7 +247,9 @@ app.get('/api/agentLogs', async (req, res) => {
   if (!name) return res.status(400).json({ error: 'missing name' })
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/agents/logs?name=${encodeURIComponent(name)}`, { headers })
+    const out = await fetchJSON(`${ORCH_URL}/agents/logs?name=${encodeURIComponent(name)}`, {
+      headers,
+    })
     res.json(out)
   } catch (e) {
     res.status(502).json({ error: String(e) })
@@ -240,9 +322,19 @@ app.get('/api/chat/stream', async (req, res) => {
     const body = { org, task: text }
     const task = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
     send('task', JSON.stringify(task))
-    // best-effort ensure agent
-    await fetchJSON(`${ORCH_URL}/agents/ensure`, { method: 'POST', headers, body: { org, prompt: text } }).catch(() => ({}))
-    send('message', 'Task scheduled and agent ensured.')
+    // best-effort ensure agent, include details in stream
+    try {
+      const ensure = await fetchJSON(`${ORCH_URL}/agents/ensure`, {
+        method: 'POST',
+        headers,
+        body: { org, prompt: text },
+      })
+      send('ensure', JSON.stringify(ensure))
+      send('message', 'Task scheduled and ensure invoked.')
+    } catch (ee) {
+      send('ensure', JSON.stringify({ error: String(ee) }))
+      send('message', 'Task scheduled; ensure failed (see debug).')
+    }
   } catch (e) {
     send('message', `Error: ${String(e)}`)
   }
@@ -250,16 +342,98 @@ app.get('/api/chat/stream', async (req, res) => {
   res.end()
 })
 
+// Debug SSE: emits initial state and periodic heartbeats so UI can log diagnostics in dev
+app.get('/api/debug/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const send = (event: string, data: any) => {
+    res.write(`event: ${event}\n`)
+    res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`)
+  }
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const [health, tasks, agents] = await Promise.all([
+      fetchJSON(`${ORCH_URL}/health`, { headers }).catch((e) => ({ error: String(e) })),
+      fetchJSON(`${ORCH_URL}/tasks`, { headers }).catch((e) => ({ error: String(e), tasks: [] })),
+      fetchJSON(`${ORCH_URL}/agents`, { headers }).catch((e) => ({ error: String(e), agents: [] })),
+    ])
+    send('config', {
+      server: 'dashboard',
+      port: PORT,
+      orch: ORCH_URL,
+      orchTokenSet: Boolean(ORCH_TOKEN),
+      uiDev: UI_DEV,
+      corsOrigins: ALLOW_ORIGINS,
+      ensureMode: LOCAL_ENSURE ? 'local' : 'orchestrator',
+    })
+    send('status', { message: 'connected' })
+    send('health', health)
+    send('state', { tasks, agents })
+  } catch (e) {
+    send('error', String(e))
+  }
+  const iv = setInterval(async () => {
+    send('heartbeat', Date.now())
+    try {
+      const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+      const [tasks, agents] = await Promise.all([
+        fetchJSON(`${ORCH_URL}/tasks`, { headers }).catch((e) => ({ error: String(e), tasks: [] })),
+        fetchJSON(`${ORCH_URL}/agents`, { headers }).catch((e) => ({
+          error: String(e),
+          agents: [],
+        })),
+      ])
+      send('state', { tasks, agents })
+    } catch (e) {
+      send('error', String(e))
+    }
+  }, 5000)
+  req.on('close', () => clearInterval(iv))
+})
+
+// Debug: explicit ensure endpoint for troubleshooting
+app.post('/api/debug/ensure', async (req, res) => {
+  try {
+    const org = (req.body && req.body.org) || 'acme'
+    const prompt = (req.body && req.body.prompt) || ''
+    const ensure = await ensureAgent(org, prompt)
+    res.json({ ok: true, ensure })
+  } catch (e) {
+    res.status(502).json({ ok: false, error: String(e) })
+  }
+})
+
+// One-shot debug status
+app.get('/api/debug', async (req, res) => {
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const [health, tasks, agents] = await Promise.all([
+      fetchJSON(`${ORCH_URL}/health`, { headers }).catch((e) => ({ error: String(e) })),
+      fetchJSON(`${ORCH_URL}/tasks`, { headers }).catch((e) => ({ error: String(e), tasks: [] })),
+      fetchJSON(`${ORCH_URL}/agents`, { headers }).catch((e) => ({ error: String(e), agents: [] })),
+    ])
+    res.json({ ok: true, health, tasks, agents, server: { port: PORT, orch: ORCH_URL } })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
 // ... existing streaming chat and SSE proxy endpoints kept in JS version (migrating incrementally) ...
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const server = app.listen(PORT, ()=> console.log(`dashboard on :${PORT}`))
+  const server = app.listen(PORT, () => console.log(`dashboard on :${PORT}`))
   server.on('upgrade', (req: any, socket, head) => {
     try {
       const url = new URL(req.url, 'http://localhost')
       if (UI_DEV && url.pathname.startsWith('/ui')) {
         const target = process.env.VITE_DEV_URL || 'http://localhost:5173'
-        proxy.ws(req, socket, head, { target, changeOrigin: true, xfwd: true, headers: { origin: target } })
+        proxy.ws(req, socket, head, {
+          target,
+          changeOrigin: true,
+          xfwd: true,
+          headers: { origin: target },
+        })
         return
       }
       const m = url.pathname.match(/^\/embed\/local\/(\d+)(\/.*)?$/)
@@ -268,7 +442,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         const rest = m[2] || '/'
         req.url = rest
         const target = `http://host.docker.internal:${port}`
-        proxy.ws(req, socket, head, { target, changeOrigin: true, xfwd: true, headers: { origin: target } })
+        proxy.ws(req, socket, head, {
+          target,
+          changeOrigin: true,
+          xfwd: true,
+          headers: { origin: target },
+        })
         return
       }
     } catch {}
