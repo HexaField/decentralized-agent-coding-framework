@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import solid from 'vite-plugin-solid'
 import path from 'path'
+import fs from 'fs'
 
 export default defineConfig({
   plugins: [solid()],
@@ -13,5 +14,11 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'es2020',
   },
-  server: { port: 5173 },
+  server: {
+    port: 5173,
+    https: {
+      key: fs.readFileSync(path.resolve(__dirname, '..', 'certs', 'vite.key')),
+      cert: fs.readFileSync(path.resolve(__dirname, '..', 'certs', 'vite.crt')),
+    },
+  },
 })

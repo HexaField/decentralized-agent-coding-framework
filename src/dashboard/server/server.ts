@@ -12,7 +12,9 @@ app.use(express.json())
 
 const PORT = Number(process.env.PORT || 8090)
 const TOKEN = process.env.DASHBOARD_TOKEN || 'dashboard-secret'
-const ORCH_URL = process.env.ORCHESTRATOR_URL || 'http://mvp-orchestrator:8080'
+const ORCH_URL =
+  process.env.ORCHESTRATOR_URL ||
+  (process.env.UI_DEV === '1' ? 'http://127.0.0.1:18080' : 'http://mvp-orchestrator:8080')
 const ORCH_TOKEN = process.env.ORCHESTRATOR_TOKEN || process.env.DASHBOARD_TOKEN || ''
 const LOCAL_ENSURE = process.env.LOCAL_ENSURE === '1'
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true })
@@ -28,7 +30,7 @@ proxy.on('proxyRes', (proxyRes, req: any, res) => {
     res.setHeader('X-Frame-Options', 'ALLOWALL')
     // If this is an embed request, rewrite redirects and cookie paths to stay under the embed base
     const base: string | undefined = req && req._embedBase
-  if (base) {
+    if (base) {
       const headers: any = (proxyRes as any).headers || {}
       const loc = headers['location'] || headers['Location']
       if (typeof loc === 'string' && loc) {
@@ -94,50 +96,65 @@ app.use((req, res, next) => {
 })
 
 function fetchJSON(
-  url: string,
+  urlStr: string,
   opts: { method?: string; headers?: Record<string, string>; body?: any } = {}
 ): Promise<any> {
   return new Promise((resolve, reject) => {
-    const u = new URL(url)
-    const lib = u.protocol === 'https:' ? https : http
-    const req = lib.request(
-      {
-        hostname: u.hostname,
-        port: Number(u.port || (u.protocol === 'https:' ? 443 : 80)),
-        path: u.pathname + (u.search || ''),
-        method: opts.method || 'GET',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {}),
-      },
-      (res) => {
-        let data = ''
-        res.on('data', (d: any) => (data += d))
-        res.on('end', () => {
-          const status = res.statusCode || 0
-          const ct = String((res.headers as any)['content-type'] || '')
-          const isJSON = ct.includes('application/json')
-          if (status >= 400) {
-            // Return a helpful error including status and body text
-            const snippet = (data || '').slice(0, 200)
-            return reject(new Error(`${status} ${snippet}`))
-          }
-          if (!data) return resolve({})
-          if (isJSON) {
-            try {
-              return resolve(JSON.parse(data))
-            } catch (e) {
-              return reject(e)
+    const attempt = (raw: string, triedFallback = false) => {
+      const u = new URL(raw)
+      const isHttps = u.protocol === 'https:'
+      const lib = isHttps ? https : http
+      const req = lib.request(
+        {
+          hostname: u.hostname,
+          port: Number(u.port || (isHttps ? 443 : 80)),
+          path: u.pathname + (u.search || ''),
+          method: opts.method || 'GET',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {}),
+          // Accept self-signed when talking to local dev https targets
+          ...(isHttps ? ({ rejectUnauthorized: false } as any) : {}),
+        },
+        (res) => {
+          let data = ''
+          res.on('data', (d: any) => (data += d))
+          res.on('end', () => {
+            const status = res.statusCode || 0
+            const ct = String((res.headers as any)['content-type'] || '')
+            const isJSON = ct.includes('application/json')
+            if (status >= 400) {
+              const snippet = (data || '').slice(0, 200)
+              return reject(new Error(`${status} ${snippet}`))
             }
-          }
-          // Fallback: return as text for non-JSON responses
-          return resolve({ text: data })
-        })
-      }
-    )
-    req.on('error', reject)
-    if (opts.body) {
-      req.write(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body))
+            if (!data) return resolve({})
+            if (isJSON) {
+              try {
+                return resolve(JSON.parse(data))
+              } catch (e) {
+                return reject(e)
+              }
+            }
+            return resolve({ text: data })
+          })
+        }
+      )
+      req.on('error', (err: any) => {
+        const msg = String((err && (err.code || err.message)) || '')
+        if (
+          !triedFallback &&
+          u.protocol === 'https:' &&
+          /EPROTO|WRONG_VERSION_NUMBER|wrong version number/i.test(msg)
+        ) {
+          // Retry once with http scheme if https failed with TLS version issues
+          const fallback = 'http://' + u.host + u.pathname + (u.search || '')
+          return attempt(fallback, true)
+        }
+        reject(err)
+      })
+      if (opts.body)
+        req.write(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body))
+      req.end()
     }
-    req.end()
+    attempt(urlStr)
   })
 }
 
@@ -145,19 +162,16 @@ function fetchJSON(
 const chats: { global: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> } = {
   global: [],
 }
-const agentChats: Record<
-  string,
-  Array<{ role: 'user' | 'assistant' | 'system'; text: string }>
-> = {}
+// removed unused agentChats
 
 // __dirname replacement for ESM
 const here = path.dirname(new URL(import.meta.url).pathname)
 // If UI_DEV=1, proxy /ui to the Vite dev server (no build needed)
 const UI_DEV = process.env.UI_DEV === '1'
 if (UI_DEV) {
-  const viteTarget = process.env.VITE_DEV_URL || 'http://localhost:5173'
+  const viteTarget = process.env.VITE_DEV_URL || 'https://localhost:5173'
   app.use('/ui', (req, res) => {
-    proxy.web(req, res, { target: viteTarget, changeOrigin: true, xfwd: true })
+    proxy.web(req, res, { target: viteTarget, changeOrigin: true, xfwd: true, secure: false })
   })
 } else {
   // Serve built UI if available (Vite build outputs to ui/dist)
@@ -180,12 +194,9 @@ app.use('/embed/local/:port', (req, res) => {
   const rest = req.url.replace(/^\/embed\/local\/\d+/, '') || '/'
   ;(req as any).url = rest
   ;(req as any)._embedBase = `/embed/local/${port}`
-  proxy.web(req, res, {
-    target,
-    changeOrigin: true,
-    xfwd: true,
-    headers: { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
-  })
+  const hdrs: any = { [CS_AUTH_HEADER]: CS_AUTH_TOKEN }
+  if (req.headers.origin) hdrs.origin = String(req.headers.origin)
+  proxy.web(req, res, { target, changeOrigin: true, xfwd: true, headers: hdrs })
 })
 
 // Reverse proxy to embed editors forwarded inside orchestrator container
@@ -197,15 +208,12 @@ app.use('/embed/orchestrator/:port', (req, res) => {
   const rest = req.url.replace(/^\/embed\/orchestrator\/(\d+)/, '') || '/'
   ;(req as any).url = rest
   ;(req as any)._embedBase = `/embed/orchestrator/${port}`
-  proxy.web(req, res, {
-    target,
-    changeOrigin: true,
-    xfwd: true,
-    headers: Object.assign(
-      { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
-      ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    ),
-  })
+  const hdrs: any = Object.assign(
+    { [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
+    ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+  )
+  if (req.headers.origin) hdrs.origin = String(req.headers.origin)
+  proxy.web(req, res, { target, changeOrigin: true, xfwd: true, headers: hdrs, secure: false })
 })
 
 app.use((req, res, next) => {
@@ -521,7 +529,15 @@ app.get('/api/debug', async (req, res) => {
 // ... existing streaming chat and SSE proxy endpoints kept in JS version (migrating incrementally) ...
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const server = app.listen(PORT, () => console.log(`dashboard on :${PORT}`))
+  // Load HTTPS certs for dev
+  const here = path.dirname(new URL(import.meta.url).pathname)
+  const certDir = path.resolve(here, '..', 'certs')
+  const keyPath = path.join(certDir, 'dashboard.key')
+  const crtPath = path.join(certDir, 'dashboard.crt')
+  const httpsOpts = { key: fs.readFileSync(keyPath), cert: fs.readFileSync(crtPath) }
+  const server = https
+    .createServer(httpsOpts, app)
+    .listen(PORT, () => console.log(`dashboard (https) on :${PORT}`))
   server.on('upgrade', (req: any, socket, head) => {
     try {
       const url = new URL(req.url, 'http://localhost')
@@ -532,6 +548,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           changeOrigin: true,
           xfwd: true,
           headers: { origin: target },
+          secure: false,
         })
         return
       }
@@ -541,12 +558,19 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         const rest = m[2] || '/'
         req.url = rest
         const target = `http://host.docker.internal:${port}`
-        proxy.ws(req, socket, head, {
-          target,
-          changeOrigin: true,
-          xfwd: true,
-          headers: { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
-        })
+        {
+          const hdrs: any = { [CS_AUTH_HEADER]: CS_AUTH_TOKEN, origin: target }
+          try {
+            ;(req as any).headers['x-forwarded-proto'] = 'https'
+          } catch {}
+          proxy.ws(req, socket, head, {
+            target,
+            changeOrigin: true,
+            xfwd: true,
+            headers: hdrs,
+            secure: false,
+          })
+        }
         return
       }
       const m2 = url.pathname.match(/^\/embed\/orchestrator\/(\d+)(\/.*)?$/)
@@ -556,15 +580,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         req.url = rest
         const orchBase = ORCH_URL.replace(/\/$/, '')
         const target = `${orchBase}/editor/proxy/${port}`
-        proxy.ws(req, socket, head, {
-          target,
-          changeOrigin: true,
-          xfwd: true,
-          headers: Object.assign(
-            { origin: target, [CS_AUTH_HEADER]: CS_AUTH_TOKEN },
+        {
+          const hdrs: any = Object.assign(
+            { [CS_AUTH_HEADER]: CS_AUTH_TOKEN, origin: target },
             ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-          ),
-        })
+          )
+          try {
+            ;(req as any).headers['x-forwarded-proto'] = 'https'
+          } catch {}
+          proxy.ws(req, socket, head, {
+            target,
+            changeOrigin: true,
+            xfwd: true,
+            headers: hdrs,
+            secure: false,
+          })
+        }
         return
       }
     } catch {}

@@ -8,7 +8,7 @@ const SERVER_BASE = (() => {
   const fromEnv = anyEnv?.VITE_SERVER_URL as string | undefined
   if (fromEnv) return fromEnv.replace(/\/$/, '')
   const l = window.location
-  if (l.port === '5173') return `${l.protocol}//${l.hostname}:8090`
+  if (l.port === '5173') return `https://${l.hostname}:8090`
   return `${l.protocol}//${l.host}`
 })()
 
