@@ -39,6 +39,8 @@ document.getElementById('embedPing').onclick = async ()=>{
 let activeAgent = null
 let activeTaskId = null
 let refreshTimer = null
+let agentES = null
+let taskES = null
 
 function renderAgentsTabs(agents){
   const tabs = document.getElementById('agentsTabs')
@@ -46,28 +48,52 @@ function renderAgentsTabs(agents){
   agents.forEach(a=>{
     const btn = document.createElement('button')
     btn.textContent = `${a.name||a.Name||'agent'} (${a.status||a.Status||'?'})`
-    btn.onclick = ()=>{ activeAgent = a.name||a.Name; activeTaskId = null; loadAgentLogs(); }
+    btn.onclick = ()=>{ 
+      activeAgent = a.name||a.Name; 
+      if(taskES){ taskES.close(); taskES=null }
+      activeTaskId = null; 
+      loadAgentLogs(); 
+    }
     tabs.appendChild(btn)
   })
   if(activeAgent && !agents.find(a=> (a.name||a.Name) === activeAgent)) activeAgent = null
-  if(!refreshTimer){ refreshTimer = setInterval(tick, 2000) }
+  if(!refreshTimer){ refreshTimer = setInterval(tick, 4000) }
 }
 
 async function tick(){
-  await main() // refresh tasks/agents
-  if(activeAgent){ await loadAgentLogs() }
-  if(activeTaskId){ await loadTaskLogs(activeTaskId) }
+  // lightweight state refresh; logs are streamed via SSE
+  const s = await fetch('/api/state').then(r=>r.json()).catch(()=>({tasks:[],agents:[],prs:[]}))
+  document.getElementById('tasks').textContent = JSON.stringify(s.tasks||[], null, 2)
+  renderAgentsTabs(s.agents||[])
 }
 
 async function loadAgentLogs(){
   const name = activeAgent; if(!name) return
+  if(agentES){ agentES.close(); agentES=null }
+  const pre = document.getElementById('agentLogs')
+  pre.textContent = ''
   const out = await fetch(`/api/agentLogs?name=${encodeURIComponent(name)}`).then(r=>r.json()).catch(()=>({lines:[]}))
-  document.getElementById('agentLogs').textContent = (out.lines||[]).join('\n')
+  pre.textContent = (out.lines||[]).join('\n')
+  pre.scrollTop = pre.scrollHeight
+  agentES = new EventSource(`/api/stream/agent?name=${encodeURIComponent(name)}`)
+  agentES.onmessage = (e)=>{
+    pre.textContent += (pre.textContent? '\n':'') + e.data
+    pre.scrollTop = pre.scrollHeight
+  }
 }
 
 async function loadTaskLogs(id){
+  if(taskES){ taskES.close(); taskES=null }
+  const pre = document.getElementById('taskLogs')
+  pre.textContent = ''
   const out = await fetch(`/api/taskLogs?id=${encodeURIComponent(id)}`).then(r=>r.json()).catch(()=>({lines:[]}))
-  document.getElementById('taskLogs').textContent = (out.lines||[]).join('\n')
+  pre.textContent = (out.lines||[]).join('\n')
+  pre.scrollTop = pre.scrollHeight
+  taskES = new EventSource(`/api/stream/task?id=${encodeURIComponent(id)}`)
+  taskES.onmessage = (e)=>{
+    pre.textContent += (pre.textContent? '\n':'') + e.data
+    pre.scrollTop = pre.scrollHeight
+  }
 }
 
 document.getElementById('agentInvoke').onclick = async ()=>{
@@ -96,4 +122,31 @@ document.getElementById('globalChatSend').onclick = async ()=>{
   await refreshGlobalChat(); await main()
 }
 setInterval(refreshGlobalChat, 3000)
+document.getElementById('globalChatStream').onclick = async ()=>{
+  const input = document.getElementById('globalChatInput')
+  const text = input.value.trim()
+  const org = document.getElementById('org').value.trim() || 'acme'
+  if(!text) return
+  const pre = document.getElementById('globalChat')
+  pre.textContent += (pre.textContent? '\n':'') + `[user] ${text}`
+  input.value = ''
+  const es = new EventSource(`/api/chat/stream?org=${encodeURIComponent(org)}&text=${encodeURIComponent(text)}`)
+  es.addEventListener('message', (e)=>{
+    pre.textContent += `\n[assistant] ${e.data}`
+    pre.scrollTop = pre.scrollHeight
+  })
+  es.addEventListener('task', (e)=>{
+    try{
+      const info = JSON.parse(e.data)
+      pre.textContent += `\n[system] scheduled task ${info.id||''}`
+    }catch(_){ pre.textContent += `\n[system] ${e.data}` }
+    pre.scrollTop = pre.scrollHeight
+  })
+  es.addEventListener('error', (e)=>{
+    pre.textContent += `\n[error] streaming failed`
+    pre.scrollTop = pre.scrollHeight
+  })
+  es.addEventListener('done', ()=>{ es.close(); refreshGlobalChat(); main() })
+}
+window.addEventListener('beforeunload', ()=>{ if(agentES) agentES.close(); if(taskES) taskES.close(); })
 main()

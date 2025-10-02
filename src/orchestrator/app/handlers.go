@@ -7,6 +7,7 @@ import (
     "log"
     "net/http"
     "os"
+    "os/exec"
     "sync"
     "time"
 )
@@ -46,6 +47,12 @@ var (
 
     agentLogsMu sync.RWMutex
     agentLogs   = make(map[string][]string)
+
+    // SSE subscribers
+    taskSubsMu sync.Mutex
+    taskSubs   = make(map[string]map[chan string]struct{}) // id -> set of channels
+    agentSubsMu sync.Mutex
+    agentSubs   = make(map[string]map[chan string]struct{}) // name -> set of channels
 )
 
 func bearerOrHeaderToken(r *http.Request) string {
@@ -149,7 +156,7 @@ func registerHandlers(mux *http.ServeMux) {
         var req struct{ ID, Line string }
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         if req.ID == "" { http.Error(w, "missing id", 400); return }
-        if req.Line != "" { appendTaskLog(req.ID, req.Line) }
+    if req.Line != "" { appendTaskLog(req.ID, req.Line); broadcastTask(req.ID, req.Line) }
         log.Printf("task[%s]: %s", req.ID, req.Line)
         w.WriteHeader(204)
     })
@@ -159,6 +166,28 @@ func registerHandlers(mux *http.ServeMux) {
         if id == "" { http.Error(w, "missing id", 400); return }
         taskLogsMu.RLock(); lines := append([]string(nil), taskLogs[id]...); taskLogsMu.RUnlock()
         writeJSON(w, map[string]any{"id": id, "lines": lines})
+    })
+    // SSE: task logs
+    mux.HandleFunc("/events/tasks", func(w http.ResponseWriter, r *http.Request) {
+        id := r.URL.Query().Get("id")
+        if id == "" { http.Error(w, "missing id", 400); return }
+        w.Header().Set("Content-Type", "text/event-stream")
+        w.Header().Set("Cache-Control", "no-cache")
+        w.Header().Set("Connection", "keep-alive")
+        flusher, ok := w.(http.Flusher); if !ok { http.Error(w, "no flusher", 500); return }
+        ch := make(chan string, 16)
+        addTaskSub(id, ch); defer removeTaskSub(id, ch)
+        // send backlog
+        taskLogsMu.RLock(); for _, ln := range taskLogs[id] { io.WriteString(w, "data: "+ln+"\n\n") }; taskLogsMu.RUnlock(); flusher.Flush()
+        notify := w.(http.CloseNotifier).CloseNotify()
+        for {
+            select {
+            case ln := <-ch:
+                io.WriteString(w, "data: "+ln+"\n\n"); flusher.Flush()
+            case <-notify:
+                return
+            }
+        }
     })
     mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
         agentsMu.RLock(); defer agentsMu.RUnlock()
@@ -188,7 +217,7 @@ func registerHandlers(mux *http.ServeMux) {
         var req struct{ Name, Line string }
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         if req.Name == "" { http.Error(w, "missing name", 400); return }
-        if req.Line != "" { appendAgentLog(req.Name, req.Line) }
+    if req.Line != "" { appendAgentLog(req.Name, req.Line); broadcastAgent(req.Name, req.Line) }
         log.Printf("agent[%s]: %s", req.Name, req.Line)
         w.WriteHeader(204)
     })
@@ -198,6 +227,40 @@ func registerHandlers(mux *http.ServeMux) {
         if name == "" { http.Error(w, "missing name", 400); return }
         agentLogsMu.RLock(); lines := append([]string(nil), agentLogs[name]...); agentLogsMu.RUnlock()
         writeJSON(w, map[string]any{"name": name, "lines": lines})
+    })
+    // Dev: ensure an agent exists by shelling out to deploy script
+    mux.HandleFunc("/agents/ensure", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Org, Prompt string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Org == "" { http.Error(w, "missing org", 400); return }
+        // run script
+        cmd := exec.Command("bash", "/scripts/deploy_agent.sh", req.Org, req.Prompt)
+        out, err := cmd.CombinedOutput()
+        if err != nil { http.Error(w, string(out), 500); return }
+        writeJSON(w, map[string]string{"ok":"1", "output": string(out)})
+    }, "ORCHESTRATOR_TOKEN"))
+    // SSE: agent logs
+    mux.HandleFunc("/events/agents", func(w http.ResponseWriter, r *http.Request) {
+        name := r.URL.Query().Get("name")
+        if name == "" { http.Error(w, "missing name", 400); return }
+        w.Header().Set("Content-Type", "text/event-stream")
+        w.Header().Set("Cache-Control", "no-cache")
+        w.Header().Set("Connection", "keep-alive")
+        flusher, ok := w.(http.Flusher); if !ok { http.Error(w, "no flusher", 500); return }
+        ch := make(chan string, 16)
+        addAgentSub(name, ch); defer removeAgentSub(name, ch)
+        // send backlog
+        agentLogsMu.RLock(); for _, ln := range agentLogs[name] { io.WriteString(w, "data: "+ln+"\n\n") }; agentLogsMu.RUnlock(); flusher.Flush()
+        notify := w.(http.CloseNotifier).CloseNotify()
+        for {
+            select {
+            case ln := <-ch:
+                io.WriteString(w, "data: "+ln+"\n\n"); flusher.Flush()
+            case <-notify:
+                return
+            }
+        }
     })
 }
 
@@ -223,4 +286,32 @@ func appendAgentLog(name, line string) {
     b := append(agentLogs[name], time.Now().Format(time.RFC3339)+" "+line)
     if len(b) > 200 { b = b[len(b)-200:] }
     agentLogs[name] = b
+}
+
+func addTaskSub(id string, ch chan string) {
+    taskSubsMu.Lock(); defer taskSubsMu.Unlock()
+    m := taskSubs[id]; if m == nil { m = make(map[chan string]struct{}); taskSubs[id] = m }
+    m[ch] = struct{}{}
+}
+func removeTaskSub(id string, ch chan string) {
+    taskSubsMu.Lock(); defer taskSubsMu.Unlock()
+    if m := taskSubs[id]; m != nil { delete(m, ch) }
+}
+func broadcastTask(id, ln string) {
+    taskSubsMu.Lock(); m := taskSubs[id]; taskSubsMu.Unlock()
+    for ch := range m { select { case ch <- ln: default: } }
+}
+
+func addAgentSub(name string, ch chan string) {
+    agentSubsMu.Lock(); defer agentSubsMu.Unlock()
+    m := agentSubs[name]; if m == nil { m = make(map[chan string]struct{}); agentSubs[name] = m }
+    m[ch] = struct{}{}
+}
+func removeAgentSub(name string, ch chan string) {
+    agentSubsMu.Lock(); defer agentSubsMu.Unlock()
+    if m := agentSubs[name]; m != nil { delete(m, ch) }
+}
+func broadcastAgent(name, ln string) {
+    agentSubsMu.Lock(); m := agentSubs[name]; agentSubsMu.Unlock()
+    for ch := range m { select { case ch <- ln: default: } }
 }

@@ -1,13 +1,18 @@
+process.env.ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://127.0.0.1:9' // force error path for test
 const request = require('supertest')
-process.env.ORCHESTRATOR_URL = 'http://127.0.0.1:9' // force error path
 const app = require('./server')
 
-describe('dashboard', ()=>{
-  it('health ok', async ()=>{
-    await request(app).get('/api/health').expect(200)
+describe('dashboard server', () => {
+  it('GET /api/health returns ok', async () => {
+    const res = await request(app).get('/api/health')
+    res.status.should.equal(200)
+    res.body.should.have.property('status', 'ok')
   })
-  it('state returns json even if orchestrator unreachable', async ()=>{
-    const res = await request(app).get('/api/state').expect(200)
-    if(!('tasks' in res.body)) throw new Error('missing tasks')
+
+  it('GET /api/state returns shape even when orchestrator is unreachable', async () => {
+    const res = await request(app).get('/api/state')
+    res.status.should.equal(200)
+    res.body.should.have.property('tasks')
+    res.body.should.have.property('agents')
   })
 })

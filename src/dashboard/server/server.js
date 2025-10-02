@@ -12,6 +12,10 @@ const ORCH_URL = process.env.ORCHESTRATOR_URL || 'http://mvp-orchestrator:8080'
 const ORCH_TOKEN = process.env.ORCHESTRATOR_TOKEN || process.env.DASHBOARD_TOKEN || ''
 const httpProxy = require('http-proxy')
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true })
+// LLM config (optional)
+const LLM_PROVIDER = process.env.LLM_PROVIDER || 'openai'
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ''
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com'
 
 // Relax frame embedding for proxied responses
 proxy.on('proxyRes', (proxyRes, req, res) => {
@@ -52,19 +56,66 @@ function fetchJSON(url, opts={}){
   })
 }
 
-async function spawnAgent(org, prompt){
-  return new Promise((resolve,reject)=>{
-    const { spawn } = require('child_process')
-    const args = [path.join('/scripts','deploy_agent.sh'), org, prompt||'']
-    const proc = spawn('bash', args, { stdio: 'pipe' })
-    let out = ''
-    proc.stdout.on('data', d=> out+=d.toString())
-    proc.stderr.on('data', d=> out+=d.toString())
-    proc.on('close', code=>{
-      if(code===0) resolve({ok:true, output: out})
-      else reject(new Error(out))
+async function streamOpenAIChat({ org, userText, systemPrompt, onChunk, onDone }){
+  if(!OPENAI_API_KEY){
+    // fallback: simulate
+    const sim = `Assistant (${org}): ${userText.substring(0,200)}`
+    onChunk(sim); onDone(); return
+  }
+  const payload = {
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    stream: true,
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userText }
+    ]
+  }
+  const u = new URL('/v1/chat/completions', OPENAI_BASE_URL)
+  const req = https.request({ hostname: u.hostname, port: u.port||443, path: u.pathname, method: 'POST', protocol: 'https:', headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${OPENAI_API_KEY}`
+  }}, res => {
+    res.setEncoding('utf8')
+    res.on('data', chunk => {
+      const lines = String(chunk).split(/\r?\n/) 
+      for(const line of lines){
+        const l = line.trim(); if(!l) continue
+        if(!l.startsWith('data:')) continue
+        const data = l.slice(5).trim()
+        if(data === '[DONE]'){ onDone && onDone(); return }
+        try{
+          const j = JSON.parse(data)
+          const delta = (((j.choices||[])[0]||{}).delta||{})
+          if(delta.content){ onChunk && onChunk(delta.content) }
+        }catch(_){ /* ignore */ }
+      }
     })
+    res.on('end', () => { onDone && onDone() })
   })
+  req.on('error', _ => { onDone && onDone() })
+  req.write(JSON.stringify(payload))
+  req.end()
+}
+
+function buildOrgContext(org){
+  // Lightweight org context from /state
+  const ctx = []
+  try{
+    const p = path.join('/state','radicle','last_pr.json')
+    if(fs.existsSync(p)){
+      const j = JSON.parse(fs.readFileSync(p,'utf8'))
+      if(j && j.url) ctx.push(`latest_pr: ${j.url}`)
+    }
+  }catch(_){}
+  try{
+    const repo = path.join('/state','demo-repo')
+    if(fs.existsSync(repo)){
+      const files = fs.readdirSync(repo).slice(0,20)
+      ctx.push(`repo_files: ${files.join(', ')}`)
+    }
+  }catch(_){ }
+  return ctx.join(' | ')
 }
 
 // In-memory chats
@@ -118,11 +169,56 @@ app.post('/api/chat', async (req,res)=>{
     const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
     const body = { org, task: text }
     const out = await fetchJSON(`${ORCH_URL}/schedule`, { method:'POST', headers, body })
-    // best-effort: spawn agent if none available; let orchestrator handle claim
-    spawnAgent(org, text).catch(()=>{})
+  // ask orchestrator to ensure an agent (dev mode)
+  await fetchJSON(`${ORCH_URL}/agents/ensure`, { method:'POST', headers, body: { org, prompt: text } }).catch(()=>({}))
     chats.global.push({role:'system', text:`scheduled task ${out.id||''}`})
     res.json({ok:true, task: out})
   }catch(e){ res.status(502).json({error:String(e)}) }
+})
+
+// Streaming assistant (SSE): distinct from scheduler. The assistant may decide to create a task.
+app.get('/api/chat/stream', async (req, res) => {
+  const org = (req.query.org||'acme')+''
+  const text = (req.query.text||'')+''
+  if(!text) return res.status(400).end('missing text')
+  // Prepare SSE
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const write = (event, data) => {
+    if(event) res.write(`event: ${event}\n`)
+    res.write(`data: ${data}\n\n`)
+  }
+  // Record user message
+  chats.global.push({ role: 'user', text })
+  // Simulated LLM with basic org-aware prefix and heuristic task detection
+  const guard = `Guardrails: Only act within the scope of org ${org}. Do not take irreversible actions without explicit confirmation. When you want to request execution, prefix a single line with [[TASK]]: <action>.`
+  const orgCtx = buildOrgContext(org)
+  const systemPrompt = (process.env.CHAT_SYSTEM_PROMPT || `You are an assistant for org ${org}. Provide concise, actionable guidance.`)
+    + (orgCtx? ` Context: ${orgCtx}.` : '')
+    + ` ${guard}`
+  let assistantFull = ''
+  await streamOpenAIChat({ org, userText: text, systemPrompt,
+    onChunk: (chunk)=>{ assistantFull += chunk; write('message', chunk) },
+    onDone: ()=>{}
+  })
+  // Heuristic: schedule if user text implies or assistant emitted a [[TASK]] line
+  const lower = (text + ' ' + assistantFull).toLowerCase()
+  const explicitTaskMatch = assistantFull.match(/\[\[TASK\]\]:\s*(.+)/)
+  const shouldSchedule = explicitTaskMatch || /build|implement|create|task|run|deploy/.test(lower)
+  const taskText = explicitTaskMatch ? explicitTaskMatch[1] : text
+  if(shouldSchedule){
+    try{
+      const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
+      const body = { org, task: taskText }
+      const out = await fetchJSON(`${ORCH_URL}/schedule`, { method:'POST', headers, body })
+      write('task', JSON.stringify({ id: out.id||'', org }))
+      chats.global.push({ role: 'system', text: `scheduled task ${out.id||''} from chat` })
+    }catch(e){ write('error', JSON.stringify({ error: String(e) })) }
+  }
+  chats.global.push({ role: 'assistant', text: assistantFull })
+  write('done', '1')
+  res.end()
 })
 
 app.get('/api/agents/:name/chat', (req,res)=>{
@@ -139,8 +235,8 @@ app.post('/api/agents/:name/chat', async (req,res)=>{
     const headers = Object.assign({}, ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {})
     const body = { org, task: text, agentHint: name }
     const out = await fetchJSON(`${ORCH_URL}/schedule`, { method:'POST', headers, body })
-    // spawn if agent missing; orchestrator claim prefers agentHint
-    spawnAgent(org, text).catch(()=>{})
+  // ensure agent via orchestrator (dev mode)
+  await fetchJSON(`${ORCH_URL}/agents/ensure`, { method:'POST', headers, body: { org, prompt: text } }).catch(()=>({}))
     agentChats[name].push({role:'system', text:`scheduled task ${out.id||''} for ${name}`})
     res.json({ok:true, task: out})
   }catch(e){ res.status(502).json({error:String(e)}) }
@@ -173,6 +269,32 @@ app.get('/api/agentLogs', async (req,res)=>{
     const out = await fetchJSON(`${ORCH_URL}/agents/logs?name=${encodeURIComponent(name)}`, { headers })
     res.json(out)
   }catch(e){ res.status(502).json({error:String(e)}) }
+})
+
+// SSE proxy
+app.get('/api/stream/task', (req,res)=>{
+  const id = req.query.id
+  if(!id) return res.status(400).end('missing id')
+  const u = new URL(`${ORCH_URL}/events/tasks?id=${encodeURIComponent(id)}`)
+  const reqx = http.request({ hostname: u.hostname, port: u.port||80, path: u.pathname+u.search, method: 'GET', headers: ORCH_TOKEN? {'X-Auth-Token': ORCH_TOKEN}: {} }, r=>{
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' })
+    r.on('data', chunk=> res.write(chunk))
+    r.on('end', ()=> res.end())
+  })
+  reqx.on('error', err=> res.status(502).end(String(err)))
+  reqx.end()
+})
+app.get('/api/stream/agent', (req,res)=>{
+  const name = req.query.name
+  if(!name) return res.status(400).end('missing name')
+  const u = new URL(`${ORCH_URL}/events/agents?name=${encodeURIComponent(name)}`)
+  const reqx = http.request({ hostname: u.hostname, port: u.port||80, path: u.pathname+u.search, method: 'GET', headers: ORCH_TOKEN? {'X-Auth-Token': ORCH_TOKEN}: {} }, r=>{
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' })
+    r.on('data', chunk=> res.write(chunk))
+    r.on('end', ()=> res.end())
+  })
+  reqx.on('error', err=> res.status(502).end(String(err)))
+  reqx.end()
 })
 
 // Lightweight probe to check if a local port-forward is up

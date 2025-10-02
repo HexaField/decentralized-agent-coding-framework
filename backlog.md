@@ -51,6 +51,12 @@ Repo layout of interest:
 - [x] Add minimal tests (supertest/mocha) and linting (eslint)
  - [x] Add schedule form in UI and server proxy to orchestrator
  - [x] Embed agent code-server in iframe via reverse proxy (with WS support)
+ - [x] Distinct UX: Scheduler vs Global Chat (separate intents and flows)
+ - Global Chat
+    - [x] LLM-backed, org-aware responses (SSE streaming)
+    - [x] Chat can initiate tasks via orchestrator; surface provenance in messages
+    - [ ] MCP tool connectors for assistant (org context/tools)
+    - [x] Guardrails and simple system prompt per org
 
 ## Phase 4 — Agent Image & Runtime (Go + editor)
 - [x] Go agent binary builds; stubs for:
@@ -65,6 +71,7 @@ Repo layout of interest:
  - [x] Gate editor with auth or token (code-server password via CODE_SERVER_PASSWORD; fallback keeps header auth)
  - [x] Include readiness/liveness probes for editor (:8443)
  - [x] Agent polls orchestrator, claims tasks by org, posts status/log updates
+ - [ ] MCP client adapters available to agent for local tools (optional; see orchestrator-led MCP below)
 
 ## Phase 5 — Kubernetes Workflow (k3d)
 - [x] Create per-org cluster (`create_org_cluster.sh`)
@@ -81,12 +88,21 @@ Repo layout of interest:
 - [ ] Add optional auto-start tailscaled guidance or a no-mesh “local-only” mode
 - [ ] Document Headscale server bootstrap and ACLs
 
-## Phase 7 — Stubs & Integrations
+## Phase 7 — Integrations & Planning
 - [x] Spec-Kit CLI stub invoked from agent
 - [x] Radicle PR stub writes last PR URL into `/state/radicle/last_pr.json`
 - [ ] Dashboard shows latest PR link and task results from `/state`
 - [ ] Orchestrator persists task metadata and exposes to dashboard
 - [ ] Add simple “task dispatch” flow from dashboard to orchestrator to agent
+ - [ ] LLM + MCP integration for Global Chat (server-side):
+    - [ ] MCP registry and connectors for org context (files, repos, knowledge)
+    - [ ] LLM provider wiring (env-based); per-org context injection
+    - [ ] Chat-to-Task bridge: assistant can create tasks via orchestrator with rationale captured
+ - [ ] Orchestrator Planner/Dispatcher:
+    - [ ] Decide agent selection or decompose tasks into sub-tasks (DAG)
+    - [ ] Track parent/child task relations and provenance
+    - [ ] Execute task graph and update statuses/logs; retry basics
+    - [ ] Persist plan state; expose to dashboard
 
 ## Phase 8 — Dev Experience & Scripts
 - [x] `seed_demo_project.sh` creates a local demo repo under `src/state/demo-repo`
@@ -106,6 +122,7 @@ Repo layout of interest:
 - [ ] Centralize secrets/env handling (.env; Kubernetes Secrets)
 - [ ] HTTPS/TLS termination strategy for public surfaces (dev vs prod)
 - [ ] Harden container images (non-root user; drop caps) and add SBOM
+ - [ ] Manage LLM provider credentials and scopes; audit chat-initiated actions
 
 ## Phase 11 — CI/CD & Releases
 - [ ] GitHub Actions: build/test for Go + Node; lint; container builds
@@ -131,17 +148,21 @@ Repo layout of interest:
 4) Schedule a task to orchestrator (token required) — agent claims and executes
    - [x] From dashboard UI or curl: `POST /schedule` (token in `X-Auth-Token`)
 5) Optional: Embed code-server in dashboard (enter local forward port, then Load)
+6) Global Chat
+   - Use “Ask (LLM)” to stream assistant responses; assistant may create a task automatically when appropriate
+   - Use “Send (schedule)” to create a task directly without chat reasoning
 
 Notes:
 - Orchestrator /health and dashboard /api/health both return `{ "status": "ok" }`.
-- Agent flow runs stubs and keeps serving on 8443; current editor is a static http fallback (no auth).
+- Agent flow runs stubs and keeps serving on 8443; code-server uses password auth; fallback HTTP server enforces a header token.
 
 ---
 
 ## Top next priorities
-- [ ] Dashboard auto-refresh or SSE for live task status and logs
-- [ ] Persist task logs and expose `/tasks/:id/logs`; live-tail in dashboard
-- [ ] Expand orchestrator to full CRUD + persistence (and expose to dashboard)
+- [ ] Global Chat MCP connectors (server-side) to provide tools/context via MCP
+- [ ] Orchestrator planner/dispatcher to figure out how to solve scheduled tasks (agent selection, decomposition, DAG execution)
+- [ ] Persist task logs and expose `/tasks/:id/logs` (SSE live-tail done)
+- [ ] Expand orchestrator task CRUD + persistence and expose to dashboard (plans, provenance)
 - [ ] PVC for agent `/state` and surface PR URL/artifacts in dashboard
 - [ ] CI pipeline for build/test and container publish; switch imagePullPolicy accordingly
 
@@ -151,3 +172,5 @@ Notes:
 - 2025-10-02: Initial backlog created with status reflecting the working quick-start and identified next steps.
 - 2025-10-02: Phase 0–2 completed: architecture doc added, Makefile/.env updated, orchestrator auth + in-memory tasks and tests implemented; schedule endpoint verified.
  - 2025-10-02: Added agent claim/update/log APIs; agent now polls and executes tasks; dashboard can embed code-server via proxy with WS support.
+ - 2025-10-02: Reprioritized around distinct Scheduler vs Global Chat. Planned LLM (+ MCP) chat that is org-aware and can initiate tasks, and an orchestrator planner/dispatcher to solve tasks autonomously.
+ - 2025-10-02: Implemented Global Chat streaming (SSE) with optional LLM provider, guardrails, and task initiation; UI logs switched to SSE live-tail for agents and tasks; dashboard tests added.
