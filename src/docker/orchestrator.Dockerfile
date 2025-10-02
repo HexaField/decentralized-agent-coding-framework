@@ -10,7 +10,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -o /out/orchestrator
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates bash curl docker-cli
+RUN apk add --no-cache ca-certificates bash curl docker-cli docker-cli-buildx
 ARG K3D_VERSION=v5.6.0
 ARG KUBECTL_VERSION=v1.30.0
 # Install k3d and kubectl

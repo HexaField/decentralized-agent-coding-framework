@@ -11,10 +11,12 @@ services:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
       - ORCHESTRATOR_CONFIG=/app/configs/orchestrator.example.yaml
       - K3D_API_HOST=host.docker.internal
+      - WORKSPACE_DIR=/workspace
     volumes:
       - ../orchestrator/configs:/app/configs:ro
       - ../state:/state
       - ../scripts:/scripts:ro
+      - ../:/workspace:ro
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "0.0.0.0:18080:8080"
@@ -35,7 +37,6 @@ services:
       - ../dashboard:/app
       - ../scripts:/scripts:ro
       - ../state:/state
-    # no direct cluster control from dashboard in dev anymore
     ports:
       - "127.0.0.1:8090:8090"
     networks:

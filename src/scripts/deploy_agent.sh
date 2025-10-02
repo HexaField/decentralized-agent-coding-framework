@@ -23,6 +23,14 @@ AGENT_NAME="agent-$(date +%s)"
 NAMESPACE="mvp-agents"
 kubectl create ns "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
+# Ensure agent image exists in the cluster nodes (imagePullPolicy Never)
+IMAGE_TAG=${IMAGE_TAG:-latest}
+ROOT_DIR=${WORKSPACE_DIR:-/workspace}
+echo "Building agent image mvp-agent:${IMAGE_TAG}"
+docker build -t mvp-agent:${IMAGE_TAG} -f "${ROOT_DIR}/docker/agent.Dockerfile" "${ROOT_DIR}"
+echo "Importing image into k3d cluster ${NAME}"
+k3d image import -c "$NAME" mvp-agent:${IMAGE_TAG}
+
 cat > /tmp/agent-deploy.yaml <<YAML
 apiVersion: apps/v1
 kind: Deployment
