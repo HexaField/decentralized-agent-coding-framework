@@ -56,7 +56,28 @@ function fetchJSON(url: string, opts: { method?: string; headers?: Record<string
 const chats: { global: Array<{role:'user'|'assistant'|'system', text:string}> } = { global: [] }
 const agentChats: Record<string, Array<{role:'user'|'assistant'|'system', text:string}>> = {}
 
-app.use('/ui', express.static(path.join(__dirname, '..', 'ui')))
+// __dirname replacement for ESM
+const here = path.dirname(new URL(import.meta.url).pathname)
+// Serve built UI if available (Vite build outputs to ui/dist)
+const builtUiDir = path.join(here, '..', 'ui', 'dist')
+const srcUiDir = path.join(here, '..', 'ui')
+if (fs.existsSync(builtUiDir)) {
+  app.use('/ui', express.static(builtUiDir))
+} else {
+  // Fallback: serve raw UI sources (useful before first build)
+  app.use('/ui', express.static(srcUiDir))
+}
+
+// Reverse proxy to embed local editors (HTTP)
+app.use('/embed/local/:port', (req, res) => {
+  const port = Number(req.params.port)
+  if (!port || Number.isNaN(port)) return res.status(400).end('bad port')
+  const target = `http://host.docker.internal:${port}`
+  // rewrite path: /embed/local/:port/(.*) -> /$1
+  const rest = req.url.replace(/^\/embed\/local\/\d+/, '') || '/'
+  ;(req as any).url = rest
+  proxy.web(req, res, { target, changeOrigin: true, xfwd: true, headers: { origin: target } })
+})
 
 app.use((req,res,next)=>{
   const safe = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS'
@@ -97,6 +118,106 @@ app.post('/api/chat', async (req,res)=>{
     chats.global.push({role:'system', text:`scheduled task ${out.id||''}`})
     res.json({ok:true, task: out})
   }catch(e){ res.status(502).json({error:String(e)}) }
+})
+
+// Proxy: task/agent logs and SSE streams expected by UI
+app.get('/api/taskLogs', async (req, res) => {
+  const id = String(req.query.id || '')
+  if (!id) return res.status(400).json({ error: 'missing id' })
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/tasks/logs?id=${encodeURIComponent(id)}`, { headers })
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
+  }
+})
+app.get('/api/agentLogs', async (req, res) => {
+  const name = String(req.query.name || '')
+  if (!name) return res.status(400).json({ error: 'missing name' })
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/agents/logs?name=${encodeURIComponent(name)}`, { headers })
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
+  }
+})
+// SSE proxy: tasks
+app.get('/api/stream/task', (req, res) => {
+  const id = String(req.query.id || '')
+  if (!id) return res.status(400).end('missing id')
+  const headers: Record<string, string> = {}
+  if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
+  const targetUrl = new URL(`${ORCH_URL}/events/tasks?id=${encodeURIComponent(id)}`)
+  // forward request manually to preserve SSE
+  const lib = targetUrl.protocol === 'https:' ? https : http
+  const r = lib.request(
+    {
+      method: 'GET',
+      hostname: targetUrl.hostname,
+      port: Number(targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80)),
+      path: targetUrl.pathname + targetUrl.search,
+      headers,
+    },
+    (rr) => {
+      res.writeHead(rr.statusCode || 200, rr.headers)
+      rr.pipe(res)
+    }
+  )
+  r.on('error', () => res.end())
+  r.end()
+})
+// SSE proxy: agents
+app.get('/api/stream/agent', (req, res) => {
+  const name = String(req.query.name || '')
+  if (!name) return res.status(400).end('missing name')
+  const headers: Record<string, string> = {}
+  if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
+  const targetUrl = new URL(`${ORCH_URL}/events/agents?name=${encodeURIComponent(name)}`)
+  const lib = targetUrl.protocol === 'https:' ? https : http
+  const r = lib.request(
+    {
+      method: 'GET',
+      hostname: targetUrl.hostname,
+      port: Number(targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80)),
+      path: targetUrl.pathname + targetUrl.search,
+      headers,
+    },
+    (rr) => {
+      res.writeHead(rr.statusCode || 200, rr.headers)
+      rr.pipe(res)
+    }
+  )
+  r.on('error', () => res.end())
+  r.end()
+})
+
+// Streaming chat: minimal SSE emitting status + scheduling + done
+app.get('/api/chat/stream', async (req, res) => {
+  const org = String(req.query.org || 'acme')
+  const text = String(req.query.text || '')
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const send = (event: string, data: string) => {
+    res.write(`event: ${event}\n`)
+    res.write(`data: ${data}\n\n`)
+  }
+  send('message', 'Thinking about your request…')
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const body = { org, task: text }
+    const task = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
+    send('task', JSON.stringify(task))
+    // best-effort ensure agent
+    await fetchJSON(`${ORCH_URL}/agents/ensure`, { method: 'POST', headers, body: { org, prompt: text } }).catch(() => ({}))
+    send('message', 'Task scheduled and agent ensured.')
+  } catch (e) {
+    send('message', `Error: ${String(e)}`)
+  }
+  send('done', '1')
+  res.end()
 })
 
 // ... existing streaming chat and SSE proxy endpoints kept in JS version (migrating incrementally) ...

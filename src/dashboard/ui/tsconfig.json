@@ -1,0 +1,7 @@
+{
+  "extends": "../tsconfig.ui.json",
+  "compilerOptions": {
+    "baseUrl": "."
+  },
+  "include": ["src/**/*", "index.html"]
+}

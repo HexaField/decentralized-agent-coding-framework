@@ -2,27 +2,12 @@
 <html>
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MVP Dashboard</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="/src/index.css" />
   </head>
   <body>
-    <h1>MVP Dashboard</h1>
-  <div id="health">Loading…</div>
-  <div class="row">
-    <input id="org" placeholder="org (e.g., acme)" />
-  </div>
-  <h2>Org Chat</h2>
-  <div class="row">
-    <input id="chatInput" placeholder="Describe your goal…" style="width:70%" />
-    <button id="chatAsk">Ask (LLM)</button>
-  </div>
-  <pre id="chatLog" style="height:180px;overflow:auto"></pre>
-  <h2>Tasks</h2>
-  <div id="tasksList"></div>
-  <h2>Agents</h2>
-  <div id="agentsList"></div>
-  <h2>Editor</h2>
-  <iframe id="embedFrame" style="width:100%;height:70vh;border:1px solid #ccc" src="about:blank"></iframe>
-    <script src="app.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
-</html>
+  </html>
