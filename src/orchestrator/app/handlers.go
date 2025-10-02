@@ -23,6 +23,7 @@ type Task struct {
     Status    string    `json:"status"`
     AgentHint string    `json:"agentHint,omitempty"`
     CreatedAt time.Time `json:"createdAt"`
+    AgentID   string    `json:"agentId,omitempty"`
 }
 
 type Agent struct {
@@ -102,6 +103,39 @@ func registerHandlers(mux *http.ServeMux) {
         out := make([]Task, 0, len(tasks))
         for _, t := range tasks { out = append(out, t) }
         writeJSON(w, out)
+    })
+    mux.HandleFunc("/tasks/claim", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Org, AgentID string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.Org == "" || req.AgentID == "" { http.Error(w, "missing org/agentId", 400); return }
+        // naive: first scheduled task for org
+        tasksMu.Lock(); defer tasksMu.Unlock()
+        for id, t := range tasks {
+            if t.Org == req.Org && t.Status == "scheduled" {
+                t.Status = "running"; t.AgentID = req.AgentID; tasks[id] = t
+                writeJSON(w, t); return
+            }
+        }
+        writeJSON(w, map[string]any{"task": nil})
+    })
+    mux.HandleFunc("/tasks/update", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ ID, Status, Log string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.ID == "" || req.Status == "" { http.Error(w, "missing id/status", 400); return }
+        tasksMu.Lock(); defer tasksMu.Unlock()
+        t, ok := tasks[req.ID]; if !ok { http.Error(w, "not found", 404); return }
+        t.Status = req.Status; tasks[req.ID] = t
+        writeJSON(w, t)
+    })
+    mux.HandleFunc("/tasks/log", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ ID, Line string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.ID == "" { http.Error(w, "missing id", 400); return }
+        log.Printf("task[%s]: %s", req.ID, req.Line)
+        w.WriteHeader(204)
     })
     mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
         agentsMu.RLock(); defer agentsMu.RUnlock()
