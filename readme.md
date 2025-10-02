@@ -1,6 +1,6 @@
 # Decentralized Agent Coding Framework
 
-A production-ready, decentralized, AI‑augmented development platform that securely connects people and coding agents across machines and organizations. It provides a unified orchestrator, distributed Kubernetes clusters per organization, and a web dashboard with AI assistance—so tasks flow from idea to reviewed PR with traceable, human‑in‑the‑loop control.
+A decentralized, AI‑augmented development platform that securely connects people and coding agents across machines and organizations. It provides a unified orchestrator, distributed Kubernetes clusters per organization, and a web dashboard with AI assistance, so tasks flow from idea to reviewed PR with traceable, human‑in‑the‑loop control.
 
 ![Screenshot_2025-10-02_at_21 37 53](https://github.com/user-attachments/assets/a6d062fe-9dc2-4b28-b5a4-906ea49fda3b)
 
