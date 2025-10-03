@@ -8,7 +8,7 @@ This document outlines the MVP system context, key components, and request/flow 
 - Dashboard (Node/Express + SPA): UI + minimal API for health/state and commands.
 - Agent (Go + editor): spawned in Kubernetes clusters per organization.
 - Mesh: Headscale/Tailscale for secure peer-to-peer connectivity.
-- Clusters: k3d (MVP) today; Talos planned next.
+- Clusters: Talos per-organization
 
 ## Component diagram (textual)
 

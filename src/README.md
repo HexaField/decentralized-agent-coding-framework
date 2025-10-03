@@ -44,7 +44,6 @@ Run the same steps on 2–3 machines. Edit `orchestrator/configs/orchestrator.ex
 ## Docs
 
 - Architecture overview: `../assets/ARCHITECTURE.md`
-- Backlog and status: `../backlog.md`
 
 ## Teardown
 

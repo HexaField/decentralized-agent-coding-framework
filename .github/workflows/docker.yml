@@ -1,0 +1,32 @@
+name: Docker Images
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/docker/**'
+      - 'src/orchestrator/**'
+      - 'src/agent/**'
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build orchestrator image
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: src/docker/orchestrator.Dockerfile
+          push: false
+          tags: mvp-orchestrator:test
+      - name: Build agent image
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: src/docker/agent.Dockerfile
+          push: false
+          tags: mvp-agent:test

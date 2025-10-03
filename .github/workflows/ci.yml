@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-orchestrator:
+    name: Build Orchestrator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+      - name: Build orchestrator
+        working-directory: src/orchestrator/app
+        run: |
+          go build -v ./...
+
+  test-dashboard:
+    name: Test Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps
+        working-directory: src/dashboard
+        run: npm ci
+      - name: Run tests
+        working-directory: src/dashboard
+        run: npm test --silent
+
+  lint-dashboard:
+    name: Lint Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps
+        working-directory: src/dashboard
+        run: npm ci
+      - name: Lint
+        working-directory: src/dashboard
+        run: npm run lint --silent
+
+  build-agent:
+    name: Build Agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+      - name: Build agent
+        working-directory: src/agent/app
+        run: |
+          go build -v ./...

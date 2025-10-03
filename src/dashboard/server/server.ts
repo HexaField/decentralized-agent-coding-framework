@@ -264,7 +264,7 @@ async function ensureAgent(org: string, prompt: string) {
     return new Promise((resolve, reject) => {
       execFile('bash', [deploy, org, prompt], { env: process.env }, (err, stdout, stderr) => {
         if (err) return reject(new Error((stdout || '') + (stderr || '') || String(err)))
-        resolve({ ok: true, output: String(stdout), mode: 'k3d' })
+  resolve({ ok: true, output: String(stdout), mode: 'local' })
       })
     })
   }
