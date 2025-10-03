@@ -1,6 +1,6 @@
 import 'dotenv/config'
 
-describe('Dashboard editor embed (orchestrator-forwarded)', () => {
+describe.skip('Dashboard editor embed (orchestrator-forwarded) [integration]', () => {
   it('opens an editor for an agent and serves it via /embed/orchestrator/:port', async () => {
     const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://127.0.0.1:8090'
     const org = process.env.ORG || 'acme'

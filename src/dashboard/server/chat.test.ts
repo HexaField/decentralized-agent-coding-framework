@@ -1,6 +1,6 @@
 import 'dotenv/config'
 
-describe('Dashboard /api/debug/ensure (agent appears)', () => {
+describe.skip('Dashboard /api/debug/ensure (agent appears) [integration]', () => {
   it('succeeds and the agent registers', async () => {
     const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://127.0.0.1:8090'
     const org = process.env.ORG || 'acme'

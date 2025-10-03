@@ -12,6 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Go cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -20,6 +28,9 @@ jobs:
         working-directory: src/orchestrator/app
         run: |
           go build -v ./...
+      - name: Run orchestrator unit tests
+        working-directory: src/orchestrator/app
+        run: go test -v ./...
 
   test-dashboard:
     name: Test Dashboard
@@ -58,6 +69,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Go cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -66,3 +85,58 @@ jobs:
         working-directory: src/agent/app
         run: |
           go build -v ./...
+
+  test-dashboard:
+    name: Test Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: src/dashboard/package-lock.json
+      - name: Install deps
+        working-directory: src/dashboard
+        run: npm ci
+      - name: Run unit tests (vitest)
+        working-directory: src/dashboard
+        run: npm test --silent
+
+  lint-dashboard:
+    name: Lint Dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: src/dashboard/package-lock.json
+      - name: Install deps
+        working-directory: src/dashboard
+        run: npm ci
+      - name: Lint
+        working-directory: src/dashboard
+        run: npm run lint --silent
+
+  integration-dashboard:
+    if: ${{ false }} # enable when integration env available
+    name: Integration (Dashboard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install deps
+        working-directory: src/dashboard
+        run: npm ci
+      - name: Run integration tests
+        working-directory: src/dashboard
+        env:
+          INTEGRATION: '1'
+        run: npx vitest run --include "server/**/*.itest.*"
