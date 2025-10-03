@@ -277,12 +277,17 @@ func registerHandlers(mux *http.ServeMux) {
             if orchURL == "" { orchURL = "http://orchestrator.tailnet:18080" }
         }
         token := os.Getenv("ORCHESTRATOR_TOKEN")
+        // If kubeconfig is available in shared state, pass it
+        stateKcfg := "/state/kube/" + req.Org + ".config"
+        if _, err := os.Stat(stateKcfg); err == nil {
+            os.Setenv("KUBECONFIG", stateKcfg)
+        }
         // Prepare command
         image := strings.TrimSpace(req.Image)
         if image == "" { image = "mvp-agent:latest" }
         cmd := exec.Command("bash", script, req.Org, image)
         // Pass env that the script requires
-        cmd.Env = append(os.Environ(),
+    cmd.Env = append(os.Environ(),
             "ORCHESTRATOR_URL="+orchURL,
             "ORCHESTRATOR_TOKEN="+token,
         )

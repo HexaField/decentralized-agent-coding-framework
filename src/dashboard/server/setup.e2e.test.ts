@@ -19,9 +19,34 @@ async function readSSE(url: string, opts?: RequestInit) {
   const decoder = new TextDecoder()
   let buffer = ''
   const events: Array<{ event: string; data: string }> = []
-  const deadline = Date.now() + 60_000
+  const deadline = Date.now() + 120_000 // allow up to 2 minutes for slow steps
+  const readWithTimeout = (ms: number) =>
+    new Promise<{ value?: Uint8Array; done?: boolean; timeout?: boolean }>((resolve) => {
+      let settled = false
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true
+          resolve({ timeout: true })
+        }
+      }, ms)
+      reader.read().then(
+        (r) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(r as any)
+        },
+        () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve({ done: true })
+        }
+      )
+    })
   while (Date.now() < deadline) {
-    const { value, done } = await reader.read()
+    const { value, done, timeout } = await readWithTimeout(45_000) // stop waiting if no new data
+    if (timeout) break
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const parts = buffer.split(/\n\n/)
@@ -172,8 +197,22 @@ describe('Setup flows (real tailscale/headscale)', () => {
       if (!run) return
       const host =
         process.env.TS_HOSTNAME || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
+      // Create an org and pass it to setup so kubeconfig names are deterministic
+      const org = `e2e-${Math.random().toString(36).slice(2, 8)}`
+      {
+        const r = await fetch(`${base}/api/orgs`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Auth-Token': DASHBOARD_TOKEN,
+          },
+          body: JSON.stringify({ name: org }),
+        })
+        expect(r.ok).toBe(true)
+      }
       const qs = new URLSearchParams({ flow: 'create', mode: 'local', token: DASHBOARD_TOKEN })
       qs.set('TS_HOSTNAME', host)
+      qs.set('org', org)
       const url = `${base}/api/setup/stream?${qs.toString()}`
       const events = await readSSE(url, { cache: 'no-store' })
       const done = events.find((e) => e.event === 'done')
@@ -186,6 +225,17 @@ describe('Setup flows (real tailscale/headscale)', () => {
         }
       })()
       expect(ok).toBe(true)
+      // verify kubeconfig exists in home kube dir with expected context when full setup runs
+      const path = await import('node:path')
+      const fs = await import('node:fs')
+      const os = await import('node:os')
+      const homeKcfg = path.resolve(os.homedir(), '.kube', `${org}.config`)
+      if (process.env.TEST_FAST_SETUP !== '1') {
+        expect(fs.existsSync(homeKcfg)).toBe(true)
+        const txt = fs.readFileSync(homeKcfg, 'utf8')
+        expect(txt).toMatch(new RegExp(`current-context:\\s*${org}`))
+        expect(txt).toMatch(new RegExp(`name:\\s*${org}`))
+      }
 
       // verify connected
       const connected = await tailscaleConnected()
@@ -195,4 +245,4 @@ describe('Setup flows (real tailscale/headscale)', () => {
   )
 })
 
-// RUN_TAILSCALE_E2E=1 SETUP_ALLOW_INTERACTIVE=0 DASHBOARD_TOKEN=dashboard-secret npm run test:e2e --silent
+// RUN_TAILSCALE_E2E=1 SETUP_ALLOW_INTERACTIVE=0 DASHBOARD_TOKEN=dashboard-secret npm run test:e2e

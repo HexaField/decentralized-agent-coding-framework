@@ -26,12 +26,21 @@ CS_PASS=${CODE_SERVER_PASSWORD:-password}
 CS_HDR=${CODE_SERVER_AUTH_HEADER:-X-Agent-Auth}
 CS_TOK=${CODE_SERVER_TOKEN:-password}
 
-KUBECONFIG_PATH="${HOME}/.kube/${ORG}.config"
-if [[ ! -f "$KUBECONFIG_PATH" ]]; then
-  echo "Missing kubeconfig: $KUBECONFIG_PATH" >&2
-  exit 1
+# Resolve kubeconfig: prefer provided KUBECONFIG, then /state/kube/<org>.config, then ~/.kube/<org>.config
+if [[ -n "${KUBECONFIG:-}" && -f "${KUBECONFIG}" ]]; then
+  : # respect provided KUBECONFIG
+else
+  STATE_KCFG="/state/kube/${ORG}.config"
+  HOME_KCFG="${HOME}/.kube/${ORG}.config"
+  if [[ -f "$STATE_KCFG" ]]; then
+    export KUBECONFIG="$STATE_KCFG"
+  elif [[ -f "$HOME_KCFG" ]]; then
+    export KUBECONFIG="$HOME_KCFG"
+  else
+    echo "Missing kubeconfig: $HOME_KCFG (also checked $STATE_KCFG)" >&2
+    exit 1
+  fi
 fi
-export KUBECONFIG="$KUBECONFIG_PATH"
 
 NS=mvp-agents
 NAME="agent-${ORG}-$(date +%s)"

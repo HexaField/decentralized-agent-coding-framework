@@ -733,6 +733,10 @@ app.get('/api/debug/stream', async (req, res) => {
       orchTokenSet: Boolean(ORCH_TOKEN),
       uiDev: UI_DEV,
       corsOrigins: ALLOW_ORIGINS,
+      kubeconfigHints: {
+        statePath: `/state/kube/<org>.config`,
+        homePath: `${process.env.HOME || '/root'}/.kube/<org>.config`,
+      },
     })
     send('status', { message: 'connected' })
     send('health', health)
