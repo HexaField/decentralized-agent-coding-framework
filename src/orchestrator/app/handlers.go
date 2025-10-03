@@ -256,6 +256,55 @@ func registerHandlers(mux *http.ServeMux) {
         writeJSON(w, h)
     })
 
+    // Deploy an agent into the Talos org using the helper script.
+    // POST /agents/deploy { org: string, image?: string }
+    mux.HandleFunc("/agents/deploy", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Org, Image, OrchestratorURL string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if strings.TrimSpace(req.Org) == "" { http.Error(w, "missing org", 400); return }
+        // Resolve script path relative to repository root in container
+        root := os.Getenv("WORKSPACE_DIR"); if root == "" { root = "/workspace" }
+        script := root + "/scripts/deploy_agent_talos.sh"
+        if _, err := os.Stat(script); err != nil {
+            http.Error(w, "deploy script not found", 500); return
+        }
+        orchURL := req.OrchestratorURL
+        if orchURL == "" {
+            // Default to our public base URL if present; otherwise use container host/port mapping
+            // In container, the orchestrator listens on 8080; clusters must resolve this
+            orchURL = os.Getenv("PUBLIC_ORCHESTRATOR_URL")
+            if orchURL == "" { orchURL = "http://orchestrator.tailnet:18080" }
+        }
+        token := os.Getenv("ORCHESTRATOR_TOKEN")
+        // Prepare command
+        image := strings.TrimSpace(req.Image)
+        if image == "" { image = "mvp-agent:latest" }
+        cmd := exec.Command("bash", script, req.Org, image)
+        // Pass env that the script requires
+        cmd.Env = append(os.Environ(),
+            "ORCHESTRATOR_URL="+orchURL,
+            "ORCHESTRATOR_TOKEN="+token,
+        )
+        // Capture output for response
+        out, err := cmd.CombinedOutput()
+        if err != nil {
+            code := 1
+            if ee, ok := err.(*exec.ExitError); ok {
+                code = ee.ExitCode()
+            }
+            w.WriteHeader(500)
+            writeJSON(w, map[string]any{
+                "ok": false,
+                "error": err.Error(),
+                "exitCode": code,
+                "output": string(out),
+            })
+            return
+        }
+        writeJSON(w, map[string]any{"ok": true, "exitCode": 0, "output": string(out)})
+    }, "ORCHESTRATOR_TOKEN"))
+
     // Proxy endpoint to expose a local forwarded editor port over the orchestrator's HTTP port.
     // Usage: GET /editor/proxy/{port}/... -> http://127.0.0.1:{port}/...
     mux.HandleFunc("/editor/proxy/", func(w http.ResponseWriter, r *http.Request) {

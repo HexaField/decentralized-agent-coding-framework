@@ -522,8 +522,22 @@ app.post('/api/chat', async (req, res) => {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
     const body = { org, task: text }
     const out = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
+    // Trigger agent deployment for this org (best-effort)
+    let deployResult: any = null
+    try {
+      deployResult = await fetchJSON(`${ORCH_URL}/agents/deploy`, {
+        method: 'POST',
+        headers,
+        body: { org },
+      })
+    } catch (e: any) {
+      deployResult = { ok: false, error: String(e?.message || e) }
+      try {
+        console.error('[deploy] error', deployResult)
+      } catch {}
+    }
     chats.global.push({ role: 'system', text: `scheduled task ${out.id || ''}` })
-    res.json({ ok: true, task: out })
+    res.json({ ok: true, task: out, deploy: deployResult })
   } catch (e) {
     res.status(502).json({ error: String(e) })
   }
@@ -672,7 +686,23 @@ app.get('/api/chat/stream', async (req, res) => {
     const body = { org, task: text }
     const task = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
     send('task', JSON.stringify(task))
-    send('message', 'Task scheduled.')
+    // Best-effort deploy an agent for this org
+    try {
+      const deploy = await fetchJSON(`${ORCH_URL}/agents/deploy`, {
+        method: 'POST',
+        headers,
+        body: { org },
+      })
+      const ok = Boolean((deploy as any)?.ok)
+      if (ok) {
+        send('message', 'Task scheduled; agent deployment started.')
+      } else {
+        send('message', 'Task scheduled; deploy returned an error.')
+      }
+      send('agent', JSON.stringify(deploy))
+    } catch (e: any) {
+      send('message', `Deploy error: ${String(e?.message || e)}`)
+    }
   } catch (e) {
     send('message', `Error: ${String(e)}`)
   }

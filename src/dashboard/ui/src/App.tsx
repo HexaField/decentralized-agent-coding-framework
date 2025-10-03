@@ -271,6 +271,22 @@ export default function App() {
       }
       loadState()
     })
+    es.addEventListener('agent', (e) => {
+      try {
+        const info = JSON.parse((e as MessageEvent).data)
+        if (info && info.ok) {
+          setChatLog((prev) => [...prev, `[system] agent deploy started`])
+        } else {
+          const err = info?.error || 'unknown error'
+          setChatLog((prev) => [
+            ...prev,
+            `[error] agent deploy failed: ${err}` + (info?.output ? `\n${info.output}` : ''),
+          ])
+        }
+      } catch {
+        setChatLog((prev) => [...prev, `[error] agent deploy failed: ${(e as MessageEvent).data}`])
+      }
+    })
 
     es.addEventListener('done', () => es.close())
     es.addEventListener('error', () => es.close())

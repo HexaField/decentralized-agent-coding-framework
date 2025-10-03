@@ -49,3 +49,9 @@ talosctl kubeconfig --endpoints "$CP1_IP" --force --nodes "$CP1_IP" --merge=fals
 KUBECONFIG="$KCFG" kubectl create namespace "$NS" --dry-run=client -o yaml | KUBECONFIG="$KCFG" kubectl apply -f -
 KUBECONFIG="$KCFG" kubectl get nodes -o wide
 echo "Kubeconfig: $KCFG (context: $ORG)"
+
+# Also copy kubeconfig into the shared state volume used by containers
+STATE_DIR=$(cd "$(dirname "$0")/.." && pwd)/state
+mkdir -p "$STATE_DIR/kube"
+cp -f "$KCFG" "$STATE_DIR/kube/${ORG}.config"
+echo "Kubeconfig copied to $STATE_DIR/kube/${ORG}.config for orchestrator access"
