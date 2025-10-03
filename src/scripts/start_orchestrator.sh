@@ -23,5 +23,5 @@ case "$CMD" in
 esac
 
 echo "Orchestrator: http://127.0.0.1:18080/health"
-echo "Dashboard:    http://127.0.0.1:8090"
+echo "Dashboard:    http://127.0.0.1:8443"
 echo "Logs: docker compose -f compose/docker-compose.orchestrator.yml logs -f orchestrator dashboard"

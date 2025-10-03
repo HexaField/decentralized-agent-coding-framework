@@ -36,7 +36,7 @@ services:
       - dashboard_node_modules:/app/node_modules
       - ../state:/state
     ports:
-      - "8090:8090"
+      - "8443:8090"
     networks:
       - mvp
 
