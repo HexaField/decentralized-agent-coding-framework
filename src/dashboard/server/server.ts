@@ -5,7 +5,7 @@ import fs from 'fs'
 import http from 'http'
 import https from 'https'
 import httpProxy from 'http-proxy'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 
 const app = express()
 app.use(express.json())
@@ -264,7 +264,7 @@ async function ensureAgent(org: string, prompt: string) {
     return new Promise((resolve, reject) => {
       execFile('bash', [deploy, org, prompt], { env: process.env }, (err, stdout, stderr) => {
         if (err) return reject(new Error((stdout || '') + (stderr || '') || String(err)))
-  resolve({ ok: true, output: String(stdout), mode: 'local' })
+        resolve({ ok: true, output: String(stdout), mode: 'local' })
       })
     })
   }
@@ -524,6 +524,162 @@ app.get('/api/debug', async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
   }
+})
+
+// Setup automation: stream steps to create a new cluster or connect this device
+app.get('/api/setup/stream', async (req, res) => {
+  // Require dashboard token; allow via header or query param (EventSource can't set headers)
+  const qtok = (req.query && (req.query as any).token) || ''
+  const presented = (req.headers['x-auth-token'] as string) || String(qtok || '')
+  if (presented !== TOKEN) {
+    res.status(401).end('unauthorized')
+    return
+  }
+
+  const flow = String(req.query.flow || 'connect') // 'create' | 'connect'
+  const mode = String(req.query.mode || 'auto') // 'external' | 'local' | 'auto'
+  const orgParam = String(req.query.org || '') // optional single org; default uses helpers
+
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const send = (event: string, data: any) => {
+    res.write(`event: ${event}\n`)
+    res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`)
+  }
+
+  const here = path.dirname(new URL(import.meta.url).pathname)
+  const srcDir = path.resolve(here, '..', '..')
+  const resolveScript = (name: string) => path.resolve(srcDir, 'scripts', name)
+  const runStep = (title: string, file: string, args: string[] = []) =>
+    new Promise<void>((resolve, reject) => {
+      send('step', { title, file, args })
+      const proc = spawn('bash', [file, ...args], { cwd: srcDir, env: process.env })
+      proc.stdout.on('data', (d) => send('log', String(d)))
+      proc.stderr.on('data', (d) => send('log', String(d)))
+      proc.on('close', (code) => {
+        if (code === 0) {
+          send('stepDone', { title, code })
+          resolve()
+        } else {
+          send('stepError', { title, code })
+          reject(new Error(`${title} failed: ${code}`))
+        }
+      })
+    })
+
+  try {
+    send('begin', { flow, mode, org: orgParam || undefined })
+
+    const hsExternal = process.env.HEADSCALE_SSH && process.env.HEADSCALE_SSH.length > 0
+    const effectiveMode = mode === 'auto' ? (hsExternal ? 'external' : 'local') : mode
+
+    if (flow === 'create') {
+      // 1) Bootstrap Headscale (external/local)
+      if (effectiveMode === 'external')
+        await runStep('Headscale bootstrap (external)', resolveScript('hs_bootstrap_external.sh'))
+      else await runStep('Headscale bootstrap (local)', resolveScript('hs_bootstrap_local.sh'))
+
+      // 2) Join this host to tailnet (best-effort)
+      try {
+        await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
+      } catch (e) {
+        send('warn', `tailscale join failed; you can fix env and retry: ${String(e)}`)
+      }
+
+      // 3) Per-org steps
+      const orgs: string[] = []
+      if (orgParam) orgs.push(orgParam)
+      else {
+        // Use org_helpers via a subshell to list orgs
+        await new Promise<void>((resolve) => {
+          const proc = spawn('bash', ['-lc', 'source scripts/org_helpers.sh && orgs_list'], {
+            cwd: srcDir,
+            env: process.env,
+          })
+          proc.stdout.on('data', (d) => {
+            String(d)
+              .split(/\r?\n/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .forEach((o) => orgs.push(o))
+          })
+          proc.on('close', () => resolve())
+        })
+      }
+      for (const o of orgs) {
+        await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o])
+        await runStep(
+          `Install Tailscale Operator (${o})`,
+          resolveScript('install_tailscale_operator.sh'),
+          [o]
+        )
+        await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
+      }
+
+      // 4) Start orchestrator/dashboard
+      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
+        'up',
+      ])
+      send('done', { ok: true })
+    } else {
+      // connect flow: join tailnet and start services; cluster must already exist
+      try {
+        await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
+      } catch (e) {
+        send(
+          'warn',
+          `tailscale join failed; check src/.env and Headscale reachability: ${String(e)}`
+        )
+      }
+      // Optional: check kubeconfigs for common orgs and emit guidance
+      const guessOrgs = ['acme', 'devrel']
+      for (const o of guessOrgs) {
+        const kc = path.join(process.env.HOME || '/root', '.kube', `${o}.config`)
+        if (!fs.existsSync(kc)) send('hint', `Missing kubeconfig for org '${o}': ${kc}`)
+      }
+      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
+        'up',
+      ])
+      send('done', { ok: true })
+    }
+  } catch (e: any) {
+    send('error', String(e && e.message ? e.message : e))
+    send('done', { ok: false })
+  } finally {
+    res.end()
+  }
+})
+
+// Validate setup prerequisites and env; returns guidance list
+app.post('/api/setup/validate', (req, res) => {
+  const presented = (req.headers['x-auth-token'] as string) || ''
+  if (presented !== TOKEN) return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const issues: string[] = []
+  const need = (cond: any, msg: string) => {
+    if (!cond) issues.push(msg)
+  }
+  need(process.env.DASHBOARD_TOKEN, 'DASHBOARD_TOKEN not set')
+  need(process.env.ORCHESTRATOR_TOKEN, 'ORCHESTRATOR_TOKEN not set')
+  // Tailscale/Headscale
+  need(process.env.HEADSCALE_URL, 'HEADSCALE_URL not set')
+  need(process.env.TS_AUTHKEY, 'TS_AUTHKEY not set (or expired)')
+  need(process.env.TS_HOSTNAME, 'TS_HOSTNAME not set')
+  // Operator creds (either OAuth or auth key)
+  if (!process.env.TS_OPERATOR_AUTHKEY) {
+    need(
+      process.env.TS_OAUTH_CLIENT_ID && process.env.TS_OAUTH_CLIENT_SECRET,
+      'Operator: set TS_OPERATOR_AUTHKEY or TS_OAUTH_CLIENT_ID/TS_OAUTH_CLIENT_SECRET'
+    )
+  }
+  // org config file
+  const repoRoot = path.resolve(path.dirname(here), '..')
+  const orgYaml = path.join(repoRoot, 'orgs.yaml')
+  const orgYamlEx = path.join(repoRoot, 'orgs.example.yaml')
+  if (!fs.existsSync(orgYaml) && !fs.existsSync(orgYamlEx)) {
+    issues.push('orgs.yaml missing in repo root (copy orgs.example.yaml and edit)')
+  }
+  res.json({ ok: issues.length === 0, issues })
 })
 
 // ... existing streaming chat and SSE proxy endpoints kept in JS version (migrating incrementally) ...

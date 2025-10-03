@@ -1,16 +1,20 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from 'solid-js'
+import OrgSelect from './components/OrgSelect'
+import SetupWizard from './components/SetupWizard'
+import OrgWizard from './components/OrgWizard'
 
 // Determine server base URL. Prefer env override, else:
 // - If running under Vite dev (port 5173), use same host on port 8090
 // - Otherwise, same-origin
 const SERVER_BASE = (() => {
-  const anyEnv = (import.meta as any)?.env
-  const fromEnv = anyEnv?.VITE_SERVER_URL as string | undefined
+  const fromEnv = import.meta.env.VITE_SERVER_URL
   if (fromEnv) return fromEnv.replace(/\/$/, '')
   const l = window.location
   if (l.port === '5173') return `https://${l.hostname}:8090`
   return `${l.protocol}//${l.host}`
 })()
+
+console.log(import.meta.env)
 
 // Dev debug stream
 const isDev = true //Boolean((import.meta as any)?.env?.DEV)
@@ -33,6 +37,12 @@ export default function App() {
   // Global state
   const [activeTab, setActiveTab] = createSignal<Tab>('Agents')
   const [org, setOrg] = createSignal('acme')
+  const [orgs, setOrgs] = createSignal<string[]>(['acme', 'devrel'])
+  const [showSetup, setShowSetup] = createSignal<'none' | 'create' | 'connect'>('connect')
+  const [showOrgWizard, setShowOrgWizard] = createSignal(false)
+  const [validated, setValidated] = createSignal(false)
+  // reserved for future TS checks; validated gate covers it for now
+  const dashboardToken = import.meta.env.VITE_DASHBOARD_TOKEN
 
   // Theme state: 'light' | 'dark' | 'system'
   type Theme = 'light' | 'dark' | 'system'
@@ -124,7 +134,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-Auth-Token': (import.meta as any)?.env?.VITE_DASHBOARD_TOKEN || '',
+          'X-Auth-Token': import.meta.env.VITE_DASHBOARD_TOKEN,
         },
         body: JSON.stringify({ org: org(), prompt: 'ensure via debug' }),
       })
@@ -229,6 +239,37 @@ export default function App() {
     loadState()
     const t = setInterval(loadState, 4000)
     onCleanup(() => clearInterval(t))
+  })
+
+  // Gating: validate env and check tailscale connectivity
+  async function validateAndDetect() {
+    try {
+      const v = await fetch(`${SERVER_BASE}/api/setup/validate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Auth-Token': import.meta.env.VITE_DASHBOARD_TOKEN,
+        },
+      }).then((r) => r.json())
+      setValidated(Boolean(v.ok))
+      // Quick TS probe: if HEADSCALE_URL present, we assume join needed; UI will run connect flow
+      // no-op for now
+    } catch {
+      setValidated(false)
+      // no-op for now
+    }
+  }
+  onMount(() => {
+    validateAndDetect()
+    // load orgs from state (placeholder until backend exposes org list)
+    setOrgs(['acme', 'devrel'])
+  })
+
+  // When switching orgs, force org setup wizard (placeholder)
+  createEffect(() => {
+    org()
+    // In a richer backend, fetch org status; for now, show connect wizard on change
+    setShowSetup('connect')
   })
 
   // Global chat stream
@@ -341,12 +382,11 @@ export default function App() {
     <div class="w-full h-screen flex flex-col">
       {/* Top navigation */}
       <header class="border-b p-3 flex items-center gap-2 bg-white dark:bg-slate-900 dark:border-slate-700">
-        <div class="font-semibold mr-4">Org:</div>
-        <input
-          class="border p-2 rounded bg-white dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
-          placeholder="org (e.g., acme)"
+        <OrgSelect
+          orgs={orgs()}
           value={org()}
-          onInput={(e) => setOrg(e.currentTarget.value)}
+          onChange={(o) => setOrg(o)}
+          onCreateNew={() => setShowOrgWizard(true)}
         />
         <nav class="ml-auto flex gap-2">
           <For each={tabs}>
@@ -391,6 +431,38 @@ export default function App() {
           height: 'calc(100vh - 60px)',
         }}
       >
+        {/* Setup gate overlays */}
+        <Show when={!validated() || showOrgWizard() || showSetup() !== 'none'}>
+          <div class="absolute inset-0 z-20 bg-white/70 dark:bg-black/60 backdrop-blur-sm flex items-start justify-center p-6 overflow-auto">
+            <div class="bg-white dark:bg-slate-900 rounded shadow-xl w-full max-w-4xl">
+              <Show when={showOrgWizard()}>
+                <OrgWizard
+                  onCreate={(name) => {
+                    setShowOrgWizard(false)
+                    if (!orgs().includes(name)) setOrgs([...orgs(), name])
+                    setOrg(name)
+                    setShowSetup('create')
+                  }}
+                  onCancel={() => setShowOrgWizard(false)}
+                />
+              </Show>
+              <Show when={!showOrgWizard() && showSetup() !== 'none'}>
+                <SetupWizard
+                  mode={showSetup() === 'create' ? 'create' : 'connect'}
+                  org={org()}
+                  serverBase={SERVER_BASE}
+                  dashboardToken={dashboardToken}
+                  onDone={(ok) => {
+                    setValidated(true)
+                    setShowSetup('none')
+                    loadState()
+                  }}
+                />
+              </Show>
+            </div>
+          </div>
+        </Show>
+
         {/* Center area by tab */}
         <main class="overflow-auto p-3">
           <Show when={activeTab() === 'Agents'}>
