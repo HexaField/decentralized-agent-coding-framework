@@ -73,7 +73,7 @@ tailscale up --reset --force-reauth 2>/dev/null || sudo tailscale up --reset --f
 
 - Orchestrator image (Go)
 	- Runs via Docker Compose with token‑gated write endpoints
-	- Uses per‑org Talos kubeconfigs; k3d paths deprecated
+	- Uses per‑org Talos kubeconfigs
 - Dashboard (Node/TypeScript)
 	- HTTPS dev mode, chat/log proxy, SSE streams, Vite UI
 - Agent (Go)

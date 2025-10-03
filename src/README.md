@@ -1,6 +1,6 @@
 # Distributed AI-Augmented Dev Lab — MVP
 
-This MVP runs a local orchestrator and agent pods across a Headscale/Tailscale mesh with per-organization k3d clusters. It demonstrates end-to-end: task dispatch → agent execution (with code-server) → PR via Radicle stub → task tracking via Spec‑Kit stub.
+This MVP runs a local orchestrator and agent pods across a Headscale/Tailscale mesh with per-organization Talos clusters. It demonstrates end-to-end: task dispatch → agent execution (with code-server) → PR via Radicle stub → task tracking via Spec‑Kit stub.
 
 ## Prerequisites
 
@@ -21,15 +21,11 @@ This MVP runs a local orchestrator and agent pods across a Headscale/Tailscale m
 3. In the Dashboard UI, use “Connect this device”:
    - Join existing network: enter Headscale URL, Auth Key, and hostname.
    - Create new network: choose local (auto Headscale bootstrap) or external (SSH), provide hostname (and SSH if external). No .env is used.
-4. Create an org cluster:
-   ./scripts/create_org_cluster.sh acme
-5. Seed demo project:
+4. Seed demo project:
    ./scripts/seed_demo_project.sh
-6. Schedule a task (Operator will reconcile the agent):
+5. Prepare the org namespace and schedule a task (CRD/operator flow):
    Use the Dashboard chat to send a task for org "acme".
-7. Open code‑server for the agent (via orchestrator proxy):
-   ./scripts/open_code_server.sh acme <agent-name>
-   Then browse http://127.0.0.1:8443 and use the password from CODE_SERVER_PASSWORD (default: password).
+   The Operator will reconcile an Agent and expose code‑server on port 8443. Use the dashboard links or the orchestrator editor proxy to access it.
 
 ## Multi-device
 
@@ -49,9 +45,8 @@ Run the same steps on 2–3 machines. Edit `orchestrator/configs/orchestrator.ex
 ## Teardown
 
 - Stop services: docker compose -f compose/docker-compose.orchestrator.yml down
-- Delete cluster: ./scripts/delete_org_cluster.sh acme
 
 ## Make targets
 
-- make test:local — spins a single org cluster, schedules a task (Operator deploys agent)
-- make test:multi — requires 2 peers in config; schedules remote task by label
+- make test:local — starts services, seeds demo project, then schedule a task via dashboard (Operator deploys agent)
+- make test:multi — requires 2 peers in config; schedule tasks via dashboard; Operator deploys agents per org
