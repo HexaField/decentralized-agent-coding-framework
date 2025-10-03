@@ -3,3 +3,4 @@ node_modules
 dist
 orgs.yaml
 _tmp
+*.db

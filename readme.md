@@ -53,6 +53,15 @@ This performs preflight checks, bootstraps Headscale namespaces and keys, sets u
 	- Orchestrator health: http://<your-tailnet-IP-or-MagicDNS-name>:18080/health
 	Note: tokens from your `.env` (DASHBOARD_TOKEN, ORCHESTRATOR_TOKEN) gate mutating actions.
 
+## Cleanup
+
+# From repo root (macOS zsh)
+docker rm -f headscale-local 2>/dev/null || true
+docker volume rm headscale-data 2>/dev/null || true
+docker network ls --format '{{.Name}}' | grep -E 'tailscale|headscale' | xargs -r docker network rm
+rm -rf ./src/_tmp/headscale
+rm -f ./state/dashboard.db
+
 ## Current progress
 
 - Orchestrator image (Go)

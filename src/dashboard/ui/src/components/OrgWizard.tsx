@@ -41,7 +41,7 @@ export default function OrgWizard(props: Props): JSX.Element {
         </button>
       </div>
       <div class="mt-3 text-sm opacity-70">
-        Tip: This prototype collects basics and starts the cluster bootstrap. Edit orgs.yaml later for full details.
+        Tip: Orgs are stored in the dashboard database. You can refine settings during bootstrap from the UI.
       </div>
     </div>
   )

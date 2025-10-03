@@ -1,5 +1,6 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from 'solid-js'
 import OrgSelect from './components/OrgSelect'
+import OrgManager from './components/OrgManager'
 import SetupWizard from './components/SetupWizard'
 import OrgWizard from './components/OrgWizard'
 
@@ -34,9 +35,11 @@ type Tab = 'Users' | 'Agents' | 'Projects' | 'Tasks' | 'Network'
 export default function App() {
   // Global state
   const [activeTab, setActiveTab] = createSignal<Tab>('Agents')
-  const [org, setOrg] = createSignal('acme')
-  const [orgs, setOrgs] = createSignal<string[]>(['acme', 'devrel'])
-  const [showSetup, setShowSetup] = createSignal<'none' | 'create' | 'connect'>('connect')
+  const [org, setOrg] = createSignal('')
+  const [orgs, setOrgs] = createSignal<string[]>([])
+  const [showSetup, setShowSetup] = createSignal<'none' | 'create' | 'connect'>('none')
+  const [showOrgManager, setShowOrgManager] = createSignal(false)
+  const [checking, setChecking] = createSignal(true)
   const [showOrgWizard, setShowOrgWizard] = createSignal(false)
   const [validated, setValidated] = createSignal(false)
   // reserved for future TS checks; validated gate covers it for now
@@ -239,36 +242,30 @@ export default function App() {
     onCleanup(() => clearInterval(t))
   })
 
-  // Gating: validate env and check tailscale connectivity
+  // Gating: check server status for tailscale connectivity
   async function validateAndDetect() {
     try {
-      const v = await fetch(`${SERVER_BASE}/api/setup/validate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Auth-Token': import.meta.env.VITE_DASHBOARD_TOKEN,
-        },
-      }).then((r) => r.json())
-      setValidated(Boolean(v.ok))
-      // Quick TS probe: if HEADSCALE_URL present, we assume join needed; UI will run connect flow
-      // no-op for now
+      setChecking(true)
+      const s = await fetch(`${SERVER_BASE}/api/setup/status`).then((r) => r.json())
+      setValidated(Boolean(s.connected))
+      if (!s.connected) setShowSetup('connect')
     } catch {
       setValidated(false)
-      // no-op for now
+    } finally {
+      setChecking(false)
     }
   }
-  onMount(() => {
+  onMount(async () => {
     validateAndDetect()
-    // load orgs from state (placeholder until backend exposes org list)
-    setOrgs(['acme', 'devrel'])
+    try {
+      const r = await fetch(`${SERVER_BASE}/api/orgs`).then((x) => x.json())
+      const names = (r.orgs || []).map((o: any) => o.name)
+      setOrgs(names)
+      if (!org() && names.length > 0) setOrg(names[0])
+    } catch {}
   })
 
-  // When switching orgs, force org setup wizard (placeholder)
-  createEffect(() => {
-    org()
-    // In a richer backend, fetch org status; for now, show connect wizard on change
-    setShowSetup('connect')
-  })
+  // Optional: could fetch org-specific status here; do not auto-open setup wizard
 
   // Global chat stream
   function askGlobalLLM() {
@@ -387,6 +384,12 @@ export default function App() {
           onCreateNew={() => setShowOrgWizard(true)}
         />
         <nav class="ml-auto flex gap-2">
+          <button
+            class={`px-4 py-2 rounded border dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-slate-100`}
+            onClick={() => setShowOrgManager(true)}
+          >
+            Orgs
+          </button>
           <For each={tabs}>
             {(t) => (
               <button
@@ -430,30 +433,61 @@ export default function App() {
         }}
       >
         {/* Setup gate overlays */}
-        <Show when={!validated() || showOrgWizard() || showSetup() !== 'none'}>
+        <Show when={!validated() || showOrgWizard() || showSetup() !== 'none' || showOrgManager()}>
           <div class="absolute inset-0 z-20 bg-white/70 dark:bg-black/60 backdrop-blur-sm flex items-start justify-center p-6 overflow-auto">
             <div class="bg-white dark:bg-slate-900 rounded shadow-xl w-full max-w-4xl">
               <Show when={showOrgWizard()}>
                 <OrgWizard
-                  onCreate={(name) => {
+                  onCreate={async (name) => {
                     setShowOrgWizard(false)
-                    if (!orgs().includes(name)) setOrgs([...orgs(), name])
-                    setOrg(name)
-                    setShowSetup('create')
+                    try {
+                      const r = await fetch(`${SERVER_BASE}/api/orgs`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'X-Auth-Token': dashboardToken,
+                        },
+                        body: JSON.stringify({ name }),
+                      }).then((x) => x.json())
+                      if (r.ok) {
+                        const names = [...orgs(), name]
+                        setOrgs(names)
+                        setOrg(name)
+                        setShowSetup('create')
+                      }
+                    } catch {}
                   }}
                   onCancel={() => setShowOrgWizard(false)}
                 />
               </Show>
-              <Show when={!showOrgWizard() && showSetup() !== 'none'}>
+              <Show when={checking()}>
+                <div class="p-6 text-center">
+                  <div class="text-lg font-semibold mb-1">Checking network status…</div>
+                  <div class="text-sm opacity-70">
+                    One moment while we detect your Tailscale connection.
+                  </div>
+                </div>
+              </Show>
+              <Show when={!showOrgWizard() && showOrgManager()}>
+                <div class="p-2 flex justify-end">
+                  <button class="px-3 py-2 border rounded" onClick={() => setShowOrgManager(false)}>
+                    Close
+                  </button>
+                </div>
+                <OrgManager serverBase={SERVER_BASE} dashboardToken={dashboardToken} />
+              </Show>
+              <Show when={!showOrgWizard() && !checking() && showSetup() !== 'none'}>
                 <SetupWizard
                   mode={showSetup() === 'create' ? 'create' : 'connect'}
                   org={org()}
                   serverBase={SERVER_BASE}
                   dashboardToken={dashboardToken}
                   onDone={(ok) => {
-                    setValidated(true)
-                    setShowSetup('none')
-                    loadState()
+                    if (ok) {
+                      setValidated(true)
+                      setShowSetup('none')
+                      loadState()
+                    }
                   }}
                 />
               </Show>

@@ -1,4 +1,4 @@
-import { Show, createSignal, onCleanup, onMount, JSX } from 'solid-js'
+import { Show, createSignal, onCleanup, onMount, JSX, For } from 'solid-js'
 
 type Props = {
   mode: 'create' | 'connect'
@@ -12,19 +12,23 @@ export default function SetupWizard(props: Props): JSX.Element {
   const [issues, setIssues] = createSignal<string[]>([])
   const [lines, setLines] = createSignal<string[]>([])
   const [running, setRunning] = createSignal(false)
+  const [tab, setTab] = createSignal<'join' | 'create'>(props.mode === 'create' ? 'create' : 'join')
+  const [result, setResult] = createSignal<null | { ok: boolean; message: string }>(null)
   const [hsUrl, setHsUrl] = createSignal('')
   const [hsSsh, setHsSsh] = createSignal('')
   const [tsKey, setTsKey] = createSignal('')
   const [tsHost, setTsHost] = createSignal('')
   let es: EventSource | null = null
 
-  async function validate() {
+  async function validate(flowOverride?: 'create' | 'connect') {
     try {
       const r = await fetch(`${props.serverBase}/api/setup/validate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Auth-Token': props.dashboardToken },
         body: JSON.stringify({
+          flow: flowOverride || (tab() === 'create' ? 'create' : 'connect'),
           HEADSCALE_URL: hsUrl() || undefined,
+          HEADSCALE_SSH: hsSsh() || undefined,
           TS_AUTHKEY: tsKey() || undefined,
           TS_HOSTNAME: tsHost() || undefined,
         }),
@@ -38,10 +42,17 @@ export default function SetupWizard(props: Props): JSX.Element {
     }
   }
 
-  function start() {
+  // Client-side required-field checks
+  const canJoin = () => Boolean(hsUrl() && tsKey() && tsHost())
+  const canCreate = () => Boolean(hsUrl() && tsHost() && (hsSsh() || tsKey()))
+
+  async function start(flow: 'connect' | 'create') {
+    const v = await validate(flow)
+    if (!v.ok) return
     setLines([])
     setRunning(true)
-  const qs = new URLSearchParams({ flow: props.mode, mode: 'auto', token: props.dashboardToken })
+    setResult(null)
+    const qs = new URLSearchParams({ flow, mode: 'auto', token: props.dashboardToken })
     if (hsUrl()) qs.set('HEADSCALE_URL', hsUrl())
     if (hsSsh()) qs.set('HEADSCALE_SSH', hsSsh())
     if (tsKey()) qs.set('TS_AUTHKEY', tsKey())
@@ -50,8 +61,10 @@ export default function SetupWizard(props: Props): JSX.Element {
     es = new EventSource(`${props.serverBase}/api/setup/stream?${qs.toString()}`, {
       withCredentials: false,
     } as any)
-    const push = (tag: string, data: string) =>
+    const push = (tag: string, data: string) => {
+      console.log(`[setup:${tag}]`, data)
       setLines((prev) => [...prev, `[${tag}] ${data}`])
+    }
     const handler = (ev: MessageEvent) => push('log', ev.data)
     es.addEventListener('log', handler)
     es.addEventListener('step', (e) => push('step', (e as MessageEvent).data))
@@ -62,9 +75,11 @@ export default function SetupWizard(props: Props): JSX.Element {
     es.addEventListener('error', (e) => push('error', (e as MessageEvent).data))
     es.addEventListener('done', (e) => {
       try {
-        const ok = JSON.parse((e as MessageEvent).data).ok
-        props.onDone(Boolean(ok))
+        const ok = Boolean(JSON.parse((e as MessageEvent).data).ok)
+        setResult({ ok, message: ok ? 'Success! This device is connected.' : 'Setup failed.' })
+        props.onDone(ok)
       } catch {
+        setResult({ ok: false, message: 'Setup failed.' })
         props.onDone(false)
       }
       es?.close()
@@ -74,32 +89,78 @@ export default function SetupWizard(props: Props): JSX.Element {
   }
 
   onMount(async () => {
-    const v = await validate()
-    if (v.ok) start()
+    await validate()
   })
   onCleanup(() => es?.close())
 
   return (
     <div class="max-w-3xl mx-auto p-4">
-      <div class="text-xl font-semibold mb-2">
-        {props.mode === 'create' ? 'Create a new cluster' : 'Connect this device'}
+      <div class="text-xl font-semibold mb-2">Connect this device</div>
+      <div class="mb-3 border-b flex gap-2">
+        <button
+          class={`px-3 py-2 ${tab() === 'join' ? 'border-b-2 border-indigo-600' : ''}`}
+          onClick={() => {
+            setTab('join')
+            validate('connect')
+          }}
+        >
+          Join existing network
+        </button>
+        <button
+          class={`px-3 py-2 ${tab() === 'create' ? 'border-b-2 border-indigo-600' : ''}`}
+          onClick={() => {
+            setTab('create')
+            validate('create')
+          }}
+        >
+          Create new network
+        </button>
+      </div>
+      <div class="text-xs opacity-70 mb-2">
+        <Show when={tab() === 'join'}>Required: Headscale URL, TS Auth Key, TS Hostname.</Show>
+        <Show when={tab() === 'create'}>
+          Required: Headscale URL, TS Hostname, and either Headscale SSH (for external bootstrap) or
+          TS Auth Key (to join after local bootstrap).
+        </Show>
       </div>
       <div class="grid gap-3 grid-cols-1 md:grid-cols-2 mb-3">
         <div>
           <label class="block text-sm font-semibold mb-1">Headscale URL</label>
-          <input class="w-full border p-2 rounded" placeholder="https://headscale.example.com" value={hsUrl()} onInput={(e) => setHsUrl(e.currentTarget.value)} />
+          <input
+            class="w-full border p-2 rounded"
+            placeholder="https://headscale.example.com"
+            value={hsUrl()}
+            onInput={(e) => setHsUrl(e.currentTarget.value)}
+          />
         </div>
-        <div>
-          <label class="block text-sm font-semibold mb-1">Headscale SSH (admin@host) — for external create</label>
-          <input class="w-full border p-2 rounded" placeholder="admin@headscale-host" value={hsSsh()} onInput={(e) => setHsSsh(e.currentTarget.value)} />
+        <div class={tab() === 'create' ? '' : 'opacity-50 pointer-events-none'}>
+          <label class="block text-sm font-semibold mb-1">
+            Headscale SSH (admin@host) — for external create
+          </label>
+          <input
+            class="w-full border p-2 rounded"
+            placeholder="admin@headscale-host"
+            value={hsSsh()}
+            onInput={(e) => setHsSsh(e.currentTarget.value)}
+          />
         </div>
         <div>
           <label class="block text-sm font-semibold mb-1">TS Auth Key</label>
-          <input class="w-full border p-2 rounded" placeholder="tskey-..." value={tsKey()} onInput={(e) => setTsKey(e.currentTarget.value)} />
+          <input
+            class="w-full border p-2 rounded"
+            placeholder="tskey-..."
+            value={tsKey()}
+            onInput={(e) => setTsKey(e.currentTarget.value)}
+          />
         </div>
         <div>
           <label class="block text-sm font-semibold mb-1">TS Hostname</label>
-          <input class="w-full border p-2 rounded" placeholder="orchestrator-myhost" value={tsHost()} onInput={(e) => setTsHost(e.currentTarget.value)} />
+          <input
+            class="w-full border p-2 rounded"
+            placeholder="orchestrator-myhost"
+            value={tsHost()}
+            onInput={(e) => setTsHost(e.currentTarget.value)}
+          />
         </div>
       </div>
       <Show when={issues().length > 0}>
@@ -116,14 +177,43 @@ export default function SetupWizard(props: Props): JSX.Element {
         {lines().join('\n') || 'Preparing…'}
       </div>
       <div class="mt-3 flex gap-2">
-        <button
-          class="px-3 py-2 border rounded"
-          disabled={running()}
-          onClick={() => start()}
-        >
-          Retry
-        </button>
+        <Show when={tab() === 'join'}>
+          <button
+            class="px-3 py-2 bg-indigo-600 text-white rounded"
+            disabled={running() || !canJoin()}
+            onClick={() => start('connect')}
+          >
+            Join
+          </button>
+        </Show>
+        <Show when={tab() === 'create'}>
+          <button
+            class="px-3 py-2 bg-indigo-600 text-white rounded"
+            disabled={running() || !canCreate()}
+            onClick={() => start('create')}
+          >
+            Create
+          </button>
+        </Show>
       </div>
+      <Show when={result()}>
+        <div class="mt-4 p-3 border rounded">
+          <div class={`font-semibold ${result()!.ok ? 'text-green-700' : 'text-red-700'}`}>
+            {result()!.message}
+          </div>
+          <div class="mt-2 flex gap-2">
+            <button class="px-3 py-2 border rounded" onClick={() => setResult(null)}>
+              Close
+            </button>
+            <button
+              class="px-3 py-2 border rounded"
+              onClick={() => start(tab() === 'create' ? 'create' : 'connect')}
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </Show>
     </div>
   )
 }

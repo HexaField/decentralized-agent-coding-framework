@@ -59,25 +59,31 @@ if [ -z "${OK:-}" ]; then
   echo "Warning: Headscale health check failed; continuing in best-effort mode."
 fi
 
-echo "Creating users per org..."
-for ORG in $(orgs_list); do
-  docker run --rm --network container:headscale-local \
-    -v headscale-data:/var/lib/headscale \
-    -v "${CONF_DIR}":/etc/headscale:ro \
-    headscale/headscale:0.26.1 -c /etc/headscale/config.yaml users create "${ORG}" || true
-done
+if [ "${HS_CREATE_ORGS:-0}" = "1" ]; then
+  echo "Creating users per org..."
+  if ORGS_OUT=$(orgs_list 2>/dev/null); then
+    for ORG in ${ORGS_OUT}; do
+      docker run --rm --network container:headscale-local \
+        -v headscale-data:/var/lib/headscale \
+        -v "${CONF_DIR}":/etc/headscale:ro \
+        headscale/headscale:0.26.1 -c /etc/headscale/config.yaml users create "${ORG}" || true
+    done
 
-echo "Creating reusable pre-auth keys..."
-for ORG in $(orgs_list); do
-  KEY=$(docker run --rm --network container:headscale-local \
-    -v headscale-data:/var/lib/headscale \
-    -v "${CONF_DIR}":/etc/headscale:ro \
-    headscale/headscale:0.26.1 -c /etc/headscale/config.yaml preauthkeys create --reusable --expiration 48h --user "${ORG}" \
-    | awk '/key:/{print $2}')
-  echo "Org: ${ORG}  TS_AUTHKEY=${KEY}"
-done
+    echo "Creating reusable pre-auth keys..."
+    for ORG in ${ORGS_OUT}; do
+      KEY=$(docker run --rm --network container:headscale-local \
+        -v headscale-data:/var/lib/headscale \
+        -v "${CONF_DIR}":/etc/headscale:ro \
+        headscale/headscale:0.26.1 -c /etc/headscale/config.yaml preauthkeys create --reusable --expiration 48h --user "${ORG}" \
+        | awk '/key:/{print $2}')
+      echo "Org: ${ORG}  TS_AUTHKEY=${KEY}"
+    done
 
-docker run --rm --network container:headscale-local -v headscale-data:/var/lib/headscale -v "${CONF_DIR}":/etc/headscale:ro headscale/headscale:0.26.1 -c /etc/headscale/config.yaml users list || true
-docker run --rm --network container:headscale-local -v headscale-data:/var/lib/headscale -v "${CONF_DIR}":/etc/headscale:ro headscale/headscale:0.26.1 -c /etc/headscale/config.yaml preauthkeys list || true
+    docker run --rm --network container:headscale-local -v headscale-data:/var/lib/headscale -v "${CONF_DIR}":/etc/headscale:ro headscale/headscale:0.26.1 -c /etc/headscale/config.yaml users list || true
+    docker run --rm --network container:headscale-local -v headscale-data:/var/lib/headscale -v "${CONF_DIR}":/etc/headscale:ro headscale/headscale:0.26.1 -c /etc/headscale/config.yaml preauthkeys list || true
+  else
+    echo "HS_CREATE_ORGS=1 set, but no orgs available from YAML/ORGS. Skipping."
+  fi
+fi
 
 echo "Local Headscale bootstrap complete at ${HEADSCALE_URL}"

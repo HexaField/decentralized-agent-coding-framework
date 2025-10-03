@@ -6,6 +6,8 @@ import http from 'http'
 import https from 'https'
 import httpProxy from 'http-proxy'
 import { execFile, spawn } from 'child_process'
+import sqlite3 from 'sqlite3'
+import { open, Database } from 'sqlite'
 
 const app = express()
 app.use(express.json())
@@ -162,6 +164,66 @@ function fetchJSON(
 const chats: { global: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> } = {
   global: [],
 }
+// SQLite orgs persistence
+let dbPromise: Promise<Database<sqlite3.Database, sqlite3.Statement>> | null = null
+function getDB() {
+  if (!dbPromise) {
+    const repoRoot = path.resolve(path.dirname(here), '..')
+    const dataDir = process.env.DASHBOARD_DATA_DIR || path.join(repoRoot, '..', 'state')
+    const dbPath = path.join(dataDir, 'dashboard.db')
+    fs.mkdirSync(dataDir, { recursive: true })
+    dbPromise = open({ filename: dbPath, driver: sqlite3.Database }).then(async (db) => {
+      await db.exec(
+        'CREATE TABLE IF NOT EXISTS orgs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+      )
+      await db.exec(
+        'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+      )
+      return db
+    })
+  }
+  return dbPromise
+}
+
+// Orgs API
+app.get('/api/orgs', async (req, res) => {
+  try {
+    const db = await getDB()
+    const rows = await db.all('SELECT id, name, created_at FROM orgs ORDER BY id ASC')
+    res.json({ ok: true, orgs: rows })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+app.post('/api/orgs', async (req, res) => {
+  if ((req.headers['x-auth-token'] as string) !== TOKEN)
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const name = (req.body && String(req.body.name || '').trim()) || ''
+  if (!name) return res.status(400).json({ ok: false, error: 'name required' })
+  try {
+    const db = await getDB()
+    await db.run('INSERT INTO orgs(name) VALUES (?)', name)
+    const row = await db.get('SELECT id, name, created_at FROM orgs WHERE name=?', name)
+    res.json({ ok: true, org: row })
+  } catch (e: any) {
+    if (String(e && e.message).includes('UNIQUE'))
+      return res.status(409).json({ ok: false, error: 'exists' })
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+app.delete('/api/orgs/:id', async (req, res) => {
+  if ((req.headers['x-auth-token'] as string) !== TOKEN)
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const id = Number(req.params.id)
+  if (!id) return res.status(400).json({ ok: false, error: 'bad id' })
+  try {
+    const db = await getDB()
+    await db.run('DELETE FROM orgs WHERE id=?', id)
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
 // removed unused agentChats
 
 // __dirname replacement for ESM
@@ -360,6 +422,57 @@ app.get('/api/agentLogs', async (req, res) => {
     res.json(out)
   } catch (e) {
     res.status(502).json({ error: String(e) })
+  }
+})
+
+// Setup status: check/persist Tailscale connectivity
+app.get('/api/setup/status', async (req, res) => {
+  try {
+    const db = await getDB()
+    // fast path: return persisted state if recent
+    const row = await db.get('SELECT value FROM kv WHERE key=?', 'tailscale_connected')
+    const persisted = row ? row.value === '1' : false
+    // If we've ever connected, keep it sticky unless explicitly reset.
+    if (persisted) return res.json({ ok: true, connected: true })
+    // Otherwise, probe tailscale; "tailscale status --json" or fallback to Headscale /health
+    let connected = false
+    try {
+      const out = await new Promise<string>((resolve, reject) => {
+        const p = spawn('tailscale', ['status', '--json'])
+        let buf = ''
+        p.stdout.on('data', (d) => (buf += String(d)))
+        p.stderr.on('data', (d) => (buf += String(d)))
+        p.on('close', (code) =>
+          code === 0 ? resolve(buf) : reject(new Error(buf || String(code)))
+        )
+      })
+      try {
+        const j = JSON.parse(out)
+        connected = Boolean(j && j.Self && j.Self.TailAddr)
+      } catch {
+        connected = /relay|wgpeer|hostinfo/i.test(out)
+      }
+    } catch {
+      // Optional: if we have HS URL, try its /health as a very weak signal
+      const hsUrl = process.env.HEADSCALE_URL
+      if (hsUrl) {
+        try {
+          const health = await fetchJSON(hsUrl.replace(/\/$/, '') + '/health').catch(() => ({}))
+          connected = Boolean(health && (health.status === 'pass' || health.status === 'ok'))
+        } catch {}
+      }
+    }
+    // persist only positive detection; do not downgrade sticky state here
+    if (connected) {
+      await db.run(
+        'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+        'tailscale_connected',
+        '1'
+      )
+    }
+    res.json({ ok: true, connected })
+  } catch (e) {
+    res.status(200).json({ ok: false, connected: false, error: String(e) })
   }
 })
 // SSE proxy: tasks
@@ -581,8 +694,28 @@ app.get('/api/setup/stream', async (req, res) => {
   try {
     send('begin', { flow, mode, org: orgParam || undefined })
 
-  const hsExternal = Boolean((HS_SSH || process.env.HEADSCALE_SSH || '').length)
+    const hsExternal = Boolean((HS_SSH || process.env.HEADSCALE_SSH || '').length)
     const effectiveMode = mode === 'auto' ? (hsExternal ? 'external' : 'local') : mode
+
+    // Early input validation per flow to avoid long-running failures
+    const missing: string[] = []
+    if (flow === 'connect') {
+      if (!HS_URL && !process.env.HEADSCALE_URL) missing.push('HEADSCALE_URL')
+      if (!TS_KEY && !process.env.TS_AUTHKEY) missing.push('TS_AUTHKEY')
+      if (!TS_HOST && !process.env.TS_HOSTNAME) missing.push('TS_HOSTNAME')
+    } else if (flow === 'create') {
+      if (!HS_URL && !process.env.HEADSCALE_URL) missing.push('HEADSCALE_URL')
+      if (!TS_HOST && !process.env.TS_HOSTNAME) missing.push('TS_HOSTNAME')
+      const hasJoinOrSSH = Boolean(
+        HS_SSH || process.env.HEADSCALE_SSH || TS_KEY || process.env.TS_AUTHKEY
+      )
+      if (!hasJoinOrSSH) missing.push('HEADSCALE_SSH or TS_AUTHKEY')
+    }
+    if (missing.length) {
+      send('error', `Missing required inputs for ${flow}: ${missing.join(', ')}`)
+      send('done', { ok: false })
+      return res.end()
+    }
 
     if (flow === 'create') {
       // 1) Bootstrap Headscale (external/local)
@@ -590,32 +723,28 @@ app.get('/api/setup/stream', async (req, res) => {
         await runStep('Headscale bootstrap (external)', resolveScript('hs_bootstrap_external.sh'))
       else await runStep('Headscale bootstrap (local)', resolveScript('hs_bootstrap_local.sh'))
 
-      // 2) Join this host to tailnet (best-effort)
+      // 2) Join this host to tailnet (required for success)
+      await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
       try {
-        await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
-      } catch (e) {
-        send('warn', `tailscale join failed; you can fix env and retry: ${String(e)}`)
-      }
+        const db = await getDB()
+        await db.run(
+          'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+          'tailscale_connected',
+          '1'
+        )
+      } catch {}
 
-      // 3) Per-org steps
+      // 3) Per-org steps (DB-backed; UI should pass org, else use all stored)
       const orgs: string[] = []
       if (orgParam) orgs.push(orgParam)
       else {
-        // Use org_helpers via a subshell to list orgs
-        await new Promise<void>((resolve) => {
-          const proc = spawn('bash', ['-lc', 'source scripts/org_helpers.sh && orgs_list'], {
-            cwd: srcDir,
-            env: process.env,
-          })
-          proc.stdout.on('data', (d) => {
-            String(d)
-              .split(/\r?\n/)
-              .map((s) => s.trim())
-              .filter(Boolean)
-              .forEach((o) => orgs.push(o))
-          })
-          proc.on('close', () => resolve())
-        })
+        try {
+          const db = await getDB()
+          const rows: Array<{ name: string }> = await db.all(
+            'SELECT name FROM orgs ORDER BY id ASC'
+          )
+          rows.forEach((r) => orgs.push(r.name))
+        } catch {}
       }
       for (const o of orgs) {
         await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o])
@@ -634,14 +763,15 @@ app.get('/api/setup/stream', async (req, res) => {
       send('done', { ok: true })
     } else {
       // connect flow: join tailnet and start services; cluster must already exist
+      await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
       try {
-        await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
-      } catch (e) {
-        send(
-          'warn',
-          `tailscale join failed; check src/.env and Headscale reachability: ${String(e)}`
+        const db = await getDB()
+        await db.run(
+          'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+          'tailscale_connected',
+          '1'
         )
-      }
+      } catch {}
       // Optional: check kubeconfigs for common orgs and emit guidance
       const guessOrgs = ['acme', 'devrel']
       for (const o of guessOrgs) {
@@ -673,25 +803,29 @@ app.post('/api/setup/validate', (req, res) => {
   need(process.env.ORCHESTRATOR_TOKEN, 'ORCHESTRATOR_TOKEN not set')
   // Tailscale/Headscale (allow UI overrides)
   const body = (typeof req.body === 'object' && req.body) || {}
+  const flow: 'create' | 'connect' = body.flow === 'create' ? 'create' : 'connect'
   const hsUrl = body.HEADSCALE_URL || process.env.HEADSCALE_URL
   const tsKey = body.TS_AUTHKEY || process.env.TS_AUTHKEY
   const tsHost = body.TS_HOSTNAME || process.env.TS_HOSTNAME
+  const hsSsh = body.HEADSCALE_SSH || process.env.HEADSCALE_SSH
   need(hsUrl, 'HEADSCALE_URL not set')
-  need(tsKey, 'TS_AUTHKEY not set (or expired)')
-  need(tsHost, 'TS_HOSTNAME not set')
+  if (flow === 'connect') {
+    need(tsKey, 'TS_AUTHKEY not set (or expired)')
+    need(tsHost, 'TS_HOSTNAME not set')
+  } else {
+    need(tsHost, 'TS_HOSTNAME not set')
+    if (!hsSsh && !tsKey) {
+      issues.push(
+        'Provide HEADSCALE_SSH (for external bootstrap) or TS_AUTHKEY (to join after local bootstrap)'
+      )
+    }
+  }
   // Operator creds (either OAuth or auth key)
   if (!process.env.TS_OPERATOR_AUTHKEY) {
     need(
       process.env.TS_OAUTH_CLIENT_ID && process.env.TS_OAUTH_CLIENT_SECRET,
       'Operator: set TS_OPERATOR_AUTHKEY or TS_OAUTH_CLIENT_ID/TS_OAUTH_CLIENT_SECRET'
     )
-  }
-  // org config file
-  const repoRoot = path.resolve(path.dirname(here), '..')
-  const orgYaml = path.join(repoRoot, 'orgs.yaml')
-  const orgYamlEx = path.join(repoRoot, 'orgs.example.yaml')
-  if (!fs.existsSync(orgYaml) && !fs.existsSync(orgYamlEx)) {
-    issues.push('orgs.yaml missing in repo root (copy orgs.example.yaml and edit)')
   }
   res.json({ ok: issues.length === 0, issues })
 })
