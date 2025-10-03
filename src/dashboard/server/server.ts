@@ -81,18 +81,22 @@ const ALLOW_ORIGINS = (process.env.CORS_ORIGINS || process.env.FRONTEND_ORIGIN |
   .filter(Boolean)
 app.use((req, res, next) => {
   const origin = (req.headers.origin as string) || ''
-  const allowStar = ALLOW_ORIGINS.includes('*')
-  const allowed = allowStar || (origin && ALLOW_ORIGINS.includes(origin))
-  if (allowed) {
+  const configured = ALLOW_ORIGINS.length > 0
+  const allowStar = configured && ALLOW_ORIGINS.includes('*')
+  const allowed = allowStar || (configured && origin && ALLOW_ORIGINS.includes(origin))
+  if (configured && allowed) {
     res.setHeader('Vary', 'Origin')
     res.setHeader('Access-Control-Allow-Origin', allowStar ? '*' : origin)
     if (!allowStar) res.setHeader('Access-Control-Allow-Credentials', 'true')
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token')
-    if (req.method === 'OPTIONS') {
-      res.status(204).end()
-      return
-    }
+  } else if (!configured) {
+    // Permissive default for dev: allow all origins
+    res.setHeader('Access-Control-Allow-Origin', '*')
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token')
+  if (req.method === 'OPTIONS') {
+    res.status(204).end()
+    return
   }
   next()
 })
@@ -669,7 +673,12 @@ app.get('/api/setup/stream', async (req, res) => {
   const here = path.dirname(new URL(import.meta.url).pathname)
   const srcDir = path.resolve(here, '..', '..')
   const resolveScript = (name: string) => path.resolve(srcDir, 'scripts', name)
-  const runStep = (title: string, file: string, args: string[] = []) =>
+  const runStep = (
+    title: string,
+    file: string,
+    args: string[] = [],
+    envOverride: Record<string, string> = {}
+  ) =>
     new Promise<void>((resolve, reject) => {
       send('step', { title, file, args })
       const childEnv: NodeJS.ProcessEnv = { ...process.env }
@@ -677,6 +686,7 @@ app.get('/api/setup/stream', async (req, res) => {
       if (HS_SSH) childEnv.HEADSCALE_SSH = HS_SSH
       if (TS_KEY) childEnv.TS_AUTHKEY = TS_KEY
       if (TS_HOST) childEnv.TS_HOSTNAME = TS_HOST
+      Object.assign(childEnv, envOverride)
       const proc = spawn('bash', [file, ...args], { cwd: srcDir, env: childEnv })
       proc.stdout.on('data', (d) => send('log', String(d)))
       proc.stderr.on('data', (d) => send('log', String(d)))
@@ -704,12 +714,10 @@ app.get('/api/setup/stream', async (req, res) => {
       if (!TS_KEY && !process.env.TS_AUTHKEY) missing.push('TS_AUTHKEY')
       if (!TS_HOST && !process.env.TS_HOSTNAME) missing.push('TS_HOSTNAME')
     } else if (flow === 'create') {
-      if (!HS_URL && !process.env.HEADSCALE_URL) missing.push('HEADSCALE_URL')
+      // For local create, we'll bootstrap Headscale ourselves and can generate a preauth key
+      if (effectiveMode === 'external' && !HS_URL && !process.env.HEADSCALE_URL)
+        missing.push('HEADSCALE_URL')
       if (!TS_HOST && !process.env.TS_HOSTNAME) missing.push('TS_HOSTNAME')
-      const hasJoinOrSSH = Boolean(
-        HS_SSH || process.env.HEADSCALE_SSH || TS_KEY || process.env.TS_AUTHKEY
-      )
-      if (!hasJoinOrSSH) missing.push('HEADSCALE_SSH or TS_AUTHKEY')
     }
     if (missing.length) {
       send('error', `Missing required inputs for ${flow}: ${missing.join(', ')}`)
@@ -723,8 +731,82 @@ app.get('/api/setup/stream', async (req, res) => {
         await runStep('Headscale bootstrap (external)', resolveScript('hs_bootstrap_external.sh'))
       else await runStep('Headscale bootstrap (local)', resolveScript('hs_bootstrap_local.sh'))
 
+      // Determine effective Headscale URL (for local, read generated config)
+      let effectiveHsUrl = HS_URL || process.env.HEADSCALE_URL || ''
+      if (!effectiveHsUrl && effectiveMode === 'local') {
+        try {
+          const cfgPath = path.join(srcDir, '_tmp', 'headscale', 'config.yaml')
+          const text = fs.readFileSync(cfgPath, 'utf8')
+          const m = text.match(/server_url:\s*(\S+)/)
+          if (m) effectiveHsUrl = m[1]
+        } catch {}
+      }
+      if (!effectiveHsUrl) send('warn', 'HEADSCALE_URL not found; tailscale join may fail')
+
+      // If no TS auth key provided and using local mode, generate one via the headscale container
+      let joinKey = TS_KEY || process.env.TS_AUTHKEY || ''
+      if (!joinKey && effectiveMode === 'local') {
+        send('step', 'Generating Headscale preauth key (local)')
+        const runDocker = async (args: string[]) =>
+          await new Promise<string>((resolve, reject) => {
+            const proc = spawn('docker', args, { env: process.env })
+            let out = ''
+            proc.stdout.on('data', (d) => (out += String(d)))
+            proc.stderr.on('data', (d) => (out += String(d)))
+            proc.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(out))))
+          })
+        try {
+          await runDocker([
+            'run',
+            '--rm',
+            '--network',
+            'container:headscale-local',
+            '-v',
+            'headscale-data:/var/lib/headscale',
+            '-v',
+            `${path.join(srcDir, '_tmp', 'headscale')}` + ':/etc/headscale:ro',
+            'headscale/headscale:0.26.1',
+            '-c',
+            '/etc/headscale/config.yaml',
+            'users',
+            'create',
+            'default',
+          ]).catch(() => '')
+          const out = await runDocker([
+            'run',
+            '--rm',
+            '--network',
+            'container:headscale-local',
+            '-v',
+            'headscale-data:/var/lib/headscale',
+            '-v',
+            `${path.join(srcDir, '_tmp', 'headscale')}` + ':/etc/headscale:ro',
+            'headscale/headscale:0.26.1',
+            '-c',
+            '/etc/headscale/config.yaml',
+            'preauthkeys',
+            'create',
+            '--reusable',
+            '--expiration',
+            '48h',
+            '--user',
+            'default',
+          ])
+          const km = out.match(/key:\s*(tskey-[A-Za-z0-9]+)/)
+          if (km) joinKey = km[1]
+          if (!joinKey) throw new Error('failed to parse generated key')
+          send('log', `Generated TS_AUTHKEY for local Headscale`)
+        } catch (e) {
+          send('stepError', String(e))
+          throw e
+        }
+      }
+
       // 2) Join this host to tailnet (required for success)
-      await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
+      await runStep('Join tailnet', resolveScript('tailscale_join.sh'), [], {
+        ...(effectiveHsUrl ? { HEADSCALE_URL: effectiveHsUrl } : {}),
+        ...(joinKey ? { TS_AUTHKEY: joinKey } : {}),
+      })
       try {
         const db = await getDB()
         await db.run(
@@ -734,32 +816,34 @@ app.get('/api/setup/stream', async (req, res) => {
         )
       } catch {}
 
-      // 3) Per-org steps (DB-backed; UI should pass org, else use all stored)
-      const orgs: string[] = []
-      if (orgParam) orgs.push(orgParam)
-      else {
-        try {
-          const db = await getDB()
-          const rows: Array<{ name: string }> = await db.all(
-            'SELECT name FROM orgs ORDER BY id ASC'
+      if (process.env.TEST_FAST_SETUP !== '1') {
+        // 3) Per-org steps (DB-backed; UI should pass org, else use all stored)
+        const orgs: string[] = []
+        if (orgParam) orgs.push(orgParam)
+        else {
+          try {
+            const db = await getDB()
+            const rows: Array<{ name: string }> = await db.all(
+              'SELECT name FROM orgs ORDER BY id ASC'
+            )
+            rows.forEach((r) => orgs.push(r.name))
+          } catch {}
+        }
+        for (const o of orgs) {
+          await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o])
+          await runStep(
+            `Install Tailscale Operator (${o})`,
+            resolveScript('install_tailscale_operator.sh'),
+            [o]
           )
-          rows.forEach((r) => orgs.push(r.name))
-        } catch {}
-      }
-      for (const o of orgs) {
-        await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o])
-        await runStep(
-          `Install Tailscale Operator (${o})`,
-          resolveScript('install_tailscale_operator.sh'),
-          [o]
-        )
-        await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
-      }
+          await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
+        }
 
-      // 4) Start orchestrator/dashboard
-      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
-        'up',
-      ])
+        // 4) Start orchestrator/dashboard
+        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
+          'up',
+        ])
+      }
       send('done', { ok: true })
     } else {
       // connect flow: join tailnet and start services; cluster must already exist
@@ -772,15 +856,17 @@ app.get('/api/setup/stream', async (req, res) => {
           '1'
         )
       } catch {}
-      // Optional: check kubeconfigs for common orgs and emit guidance
-      const guessOrgs = ['acme', 'devrel']
-      for (const o of guessOrgs) {
-        const kc = path.join(process.env.HOME || '/root', '.kube', `${o}.config`)
-        if (!fs.existsSync(kc)) send('hint', `Missing kubeconfig for org '${o}': ${kc}`)
+      if (process.env.TEST_FAST_SETUP !== '1') {
+        // Optional: check kubeconfigs for common orgs and emit guidance
+        const guessOrgs = ['acme', 'devrel']
+        for (const o of guessOrgs) {
+          const kc = path.join(process.env.HOME || '/root', '.kube', `${o}.config`)
+          if (!fs.existsSync(kc)) send('hint', `Missing kubeconfig for org '${o}': ${kc}`)
+        }
+        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
+          'up',
+        ])
       }
-      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
-        'up',
-      ])
       send('done', { ok: true })
     }
   } catch (e: any) {
@@ -796,38 +882,37 @@ app.post('/api/setup/validate', (req, res) => {
   const presented = (req.headers['x-auth-token'] as string) || ''
   if (presented !== TOKEN) return res.status(401).json({ ok: false, error: 'unauthorized' })
   const issues: string[] = []
-  const need = (cond: any, msg: string) => {
-    if (!cond) issues.push(msg)
+  const critical: string[] = []
+  const add = (cond: any, msg: string, isCritical = false) => {
+    if (!cond) (isCritical ? critical : issues).push(msg)
   }
-  need(process.env.DASHBOARD_TOKEN, 'DASHBOARD_TOKEN not set')
-  need(process.env.ORCHESTRATOR_TOKEN, 'ORCHESTRATOR_TOKEN not set')
+  // Non-critical env hints
+  add(process.env.DASHBOARD_TOKEN, 'DASHBOARD_TOKEN not set (using default)', false)
+  add(process.env.ORCHESTRATOR_TOKEN, 'ORCHESTRATOR_TOKEN not set (some features may be limited)', false)
   // Tailscale/Headscale (allow UI overrides)
   const body = (typeof req.body === 'object' && req.body) || {}
   const flow: 'create' | 'connect' = body.flow === 'create' ? 'create' : 'connect'
   const hsUrl = body.HEADSCALE_URL || process.env.HEADSCALE_URL
   const tsKey = body.TS_AUTHKEY || process.env.TS_AUTHKEY
   const tsHost = body.TS_HOSTNAME || process.env.TS_HOSTNAME
-  const hsSsh = body.HEADSCALE_SSH || process.env.HEADSCALE_SSH
-  need(hsUrl, 'HEADSCALE_URL not set')
+  // For connect, require HS URL + TS key + hostname
   if (flow === 'connect') {
-    need(tsKey, 'TS_AUTHKEY not set (or expired)')
-    need(tsHost, 'TS_HOSTNAME not set')
+    add(hsUrl, 'HEADSCALE_URL not set', true)
+    add(tsKey, 'TS_AUTHKEY not set (or expired)', true)
+    add(tsHost, 'TS_HOSTNAME not set', true)
   } else {
-    need(tsHost, 'TS_HOSTNAME not set')
-    if (!hsSsh && !tsKey) {
-      issues.push(
-        'Provide HEADSCALE_SSH (for external bootstrap) or TS_AUTHKEY (to join after local bootstrap)'
-      )
-    }
+    // For create (local): only hostname is required; HS_URL and keys can be derived/generated
+    add(tsHost, 'TS_HOSTNAME not set', true)
   }
-  // Operator creds (either OAuth or auth key)
+  // Operator creds (either OAuth or auth key) – non-critical for setup flows
   if (!process.env.TS_OPERATOR_AUTHKEY) {
-    need(
+    add(
       process.env.TS_OAUTH_CLIENT_ID && process.env.TS_OAUTH_CLIENT_SECRET,
-      'Operator: set TS_OPERATOR_AUTHKEY or TS_OAUTH_CLIENT_ID/TS_OAUTH_CLIENT_SECRET'
+      'Operator: set TS_OPERATOR_AUTHKEY or TS_OAUTH_CLIENT_ID/TS_OAUTH_CLIENT_SECRET',
+      false
     )
   }
-  res.json({ ok: issues.length === 0, issues })
+  res.json({ ok: critical.length === 0, issues: [...critical, ...issues] })
 })
 
 // ... existing streaming chat and SSE proxy endpoints kept in JS version (migrating incrementally) ...

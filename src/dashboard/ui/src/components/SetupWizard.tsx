@@ -1,4 +1,4 @@
-import { Show, createSignal, onCleanup, onMount, JSX, For } from 'solid-js'
+import { Show, createSignal, onCleanup, onMount, JSX } from 'solid-js'
 
 type Props = {
   mode: 'create' | 'connect'
@@ -44,7 +44,8 @@ export default function SetupWizard(props: Props): JSX.Element {
 
   // Client-side required-field checks
   const canJoin = () => Boolean(hsUrl() && tsKey() && tsHost())
-  const canCreate = () => Boolean(hsUrl() && tsHost() && (hsSsh() || tsKey()))
+  // Allow local create without Headscale URL (the server will discover it)
+  const canCreate = () => Boolean(tsHost() && (hsUrl() || hsSsh() || tsKey()))
 
   async function start(flow: 'connect' | 'create') {
     const v = await validate(flow)
@@ -73,6 +74,9 @@ export default function SetupWizard(props: Props): JSX.Element {
     es.addEventListener('warn', (e) => push('warn', (e as MessageEvent).data))
     es.addEventListener('hint', (e) => push('hint', (e as MessageEvent).data))
     es.addEventListener('error', (e) => push('error', (e as MessageEvent).data))
+    es.addEventListener('error', (e) => {
+      setLines((prev) => [...prev, `[error] stream error`])
+    })
     es.addEventListener('done', (e) => {
       try {
         const ok = Boolean(JSON.parse((e as MessageEvent).data).ok)
@@ -96,6 +100,7 @@ export default function SetupWizard(props: Props): JSX.Element {
   return (
     <div class="max-w-3xl mx-auto p-4">
       <div class="text-xl font-semibold mb-2">Connect this device</div>
+      <div class="text-xs opacity-70 mb-2">Server: {props.serverBase}</div>
       <div class="mb-3 border-b flex gap-2">
         <button
           class={`px-3 py-2 ${tab() === 'join' ? 'border-b-2 border-indigo-600' : ''}`}
@@ -119,8 +124,8 @@ export default function SetupWizard(props: Props): JSX.Element {
       <div class="text-xs opacity-70 mb-2">
         <Show when={tab() === 'join'}>Required: Headscale URL, TS Auth Key, TS Hostname.</Show>
         <Show when={tab() === 'create'}>
-          Required: Headscale URL, TS Hostname, and either Headscale SSH (for external bootstrap) or
-          TS Auth Key (to join after local bootstrap).
+          Required: TS Hostname and one of: Headscale URL (external), Headscale SSH (external
+          bootstrap), or TS Auth Key (join after local bootstrap).
         </Show>
       </div>
       <div class="grid gap-3 grid-cols-1 md:grid-cols-2 mb-3">
@@ -179,7 +184,7 @@ export default function SetupWizard(props: Props): JSX.Element {
       <div class="mt-3 flex gap-2">
         <Show when={tab() === 'join'}>
           <button
-            class="px-3 py-2 bg-indigo-600 text-white rounded"
+            class="px-3 py-2 bg-indigo-600 text-white rounded disabled:bg-indigo-300 disabled:opacity-60 disabled:cursor-not-allowed"
             disabled={running() || !canJoin()}
             onClick={() => start('connect')}
           >
@@ -188,7 +193,7 @@ export default function SetupWizard(props: Props): JSX.Element {
         </Show>
         <Show when={tab() === 'create'}>
           <button
-            class="px-3 py-2 bg-indigo-600 text-white rounded"
+            class="px-3 py-2 bg-indigo-600 text-white rounded disabled:bg-indigo-300 disabled:opacity-60 disabled:cursor-not-allowed"
             disabled={running() || !canCreate()}
             onClick={() => start('create')}
           >

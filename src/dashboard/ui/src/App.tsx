@@ -43,7 +43,7 @@ export default function App() {
   const [showOrgWizard, setShowOrgWizard] = createSignal(false)
   const [validated, setValidated] = createSignal(false)
   // reserved for future TS checks; validated gate covers it for now
-  const dashboardToken = import.meta.env.VITE_DASHBOARD_TOKEN
+  const dashboardToken = import.meta.env.VITE_DASHBOARD_TOKEN || 'dashboard-secret'
 
   // Theme state: 'light' | 'dark' | 'system'
   type Theme = 'light' | 'dark' | 'system'
