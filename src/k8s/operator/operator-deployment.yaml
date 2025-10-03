@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-operator
+  namespace: mvp-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-operator
+  template:
+    metadata:
+      labels:
+        app: agent-operator
+    spec:
+      serviceAccountName: agent-operator
+      containers:
+        - name: operator
+          image: mvp-operator:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --metrics-bind-address=:8081
+            - --health-probe-bind-address=:8082
+          ports:
+            - name: metrics
+              containerPort: 8081
+            - name: healthz
+              containerPort: 8082

@@ -14,6 +14,7 @@ export default function OrgManager(props: Props): JSX.Element {
   )
   const [uploading, setUploading] = createSignal<Record<string, boolean>>({})
   const [pasteBuf, setPasteBuf] = createSignal<Record<string, string>>({})
+  const [nsMsg, setNsMsg] = createSignal<Record<string, string>>({})
 
   async function load() {
     setLoading(true)
@@ -83,6 +84,21 @@ export default function OrgManager(props: Props): JSX.Element {
 
   onMount(load)
 
+  async function prepareNamespace(name: string) {
+    try {
+      setNsMsg((p) => ({ ...p, [name]: 'preparing…' }))
+      const r = await fetch(`${props.serverBase}/api/k8s/prepare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': props.dashboardToken },
+        body: JSON.stringify({ org: name }),
+      }).then((x) => x.json())
+      if (!r || r.error) throw new Error(r.error || 'prepare failed')
+      setNsMsg((p) => ({ ...p, [name]: `ok: ${r.namespace || 'mvp-agents'}` }))
+    } catch (e) {
+      setNsMsg((p) => ({ ...p, [name]: 'error: ' + String(e) }))
+    }
+  }
+
   return (
     <div class="p-4">
       <div class="text-xl font-semibold mb-3">Org Manager</div>
@@ -146,6 +162,12 @@ export default function OrgManager(props: Props): JSX.Element {
                 >
                   {uploading()[o.name] ? 'Uploading…' : 'Save pasted'}
                 </button>
+              </div>
+              <div class="flex items-center gap-2">
+                <button class="px-2 py-1 border rounded" onClick={() => prepareNamespace(o.name)}>
+                  Prepare namespace
+                </button>
+                <span class="text-xs opacity-70">{nsMsg()[o.name] || ''}</span>
               </div>
               <textarea
                 class="w-full border rounded p-2 text-xs font-mono dark:border-slate-700 dark:bg-slate-900"

@@ -91,6 +91,15 @@ export default function App() {
 
   // Shared data
   const [tasks, setTasks] = createSignal<Task[]>([])
+  const [taskDetails, setTaskDetails] = createSignal<Record<string, any>>({})
+  // lightweight toast system
+  type Toast = { id: number; text: string; kind: 'info' | 'success' | 'error' }
+  const [toasts, setToasts] = createSignal<Toast[]>([])
+  const notify = (text: string, kind: Toast['kind'] = 'info') => {
+    const id = Date.now() + Math.random()
+    setToasts((prev) => [...prev, { id, text, kind }])
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3500)
+  }
   const [agents, setAgents] = createSignal<Agent[]>([])
 
   // Global chat (collapsible right panel)
@@ -217,6 +226,47 @@ export default function App() {
       if (!selectedAgent() && (s.agents || []).length > 0)
         setSelectedAgent(s.agents[0].name || s.agents[0].Name)
     } catch {}
+  }
+
+  // Task status polling
+  async function refreshTaskStatuses() {
+    const list = tasks()
+    if (!list || list.length === 0) return
+    for (const t of list) {
+      const id = t.id
+      if (!id) continue
+      // Only poll non-terminal
+      const st = String(t.status || '').toLowerCase()
+      if (["cancelled", "succeeded", "failed"].includes(st)) continue
+      try {
+        const out = await fetch(`${SERVER_BASE}/api/taskStatus?id=${encodeURIComponent(id)}`).then((r) => r.json())
+        setTaskDetails((prev) => ({ ...prev, [id]: out }))
+      } catch {}
+    }
+  }
+  createEffect(() => {
+    refreshTaskStatuses()
+    const t = setInterval(refreshTaskStatuses, 4000)
+    onCleanup(() => clearInterval(t))
+  })
+
+  async function cancelTask(id: string) {
+    try {
+      const r = await fetch(`${SERVER_BASE}/api/task/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      if (r.ok) notify(`Cancel requested for ${id}`, 'success')
+      else notify(`Cancel failed for ${id}`, 'error')
+    } catch {
+      notify(`Cancel failed for ${id}`, 'error')
+    }
+    // refresh state and details shortly after
+    setTimeout(() => {
+      loadState()
+      refreshTaskStatuses()
+    }, 800)
   }
 
   createEffect(() => {
@@ -371,6 +421,23 @@ export default function App() {
 
   return (
     <div class="w-full h-screen flex flex-col">
+      <div class="fixed right-3 bottom-3 z-50 space-y-2">
+        <For each={toasts()}>
+          {(t) => (
+            <div
+              class={`px-3 py-2 rounded shadow text-sm ${
+                t.kind === 'success'
+                  ? 'bg-green-600 text-white'
+                  : t.kind === 'error'
+                  ? 'bg-red-600 text-white'
+                  : 'bg-slate-800 text-white'
+              }`}
+            >
+              {t.text}
+            </div>
+          )}
+        </For>
+      </div>
       {/* Top navigation */}
       <header class="border-b p-3 flex items-center gap-2 bg-white dark:bg-slate-900 dark:border-slate-700">
         <OrgSelect
@@ -607,14 +674,48 @@ export default function App() {
             <div class="space-y-2">
               <div class="text-sm font-semibold">Tasks</div>
               <For each={tasks()}>
-                {(t) => (
-                  <div class="border rounded p-2 dark:border-slate-700">
-                    <div class="font-mono text-sm">
-                      [{t.id}] {t.status}
+                {(t) => {
+                  const det = () => taskDetails()[t.id] || {}
+                  const crd = () => (det() as any).crd
+                  const k8s = () => (det() as any).k8s
+                  const conditions = () => (crd() && crd().status && crd().status.conditions) || []
+                  const fmtTime = (s: string) => {
+                    try { return new Date(s).toLocaleString() } catch { return s }
+                  }
+                  return (
+                    <div class="border rounded p-2 dark:border-slate-700">
+                      <div class="font-mono text-sm flex items-center justify-between">
+                        <span>
+                          [{t.id}] {t.status}
+                        </span>
+                        <button class="px-2 py-1 border rounded text-xs" onClick={() => cancelTask(t.id)} disabled={String(t.status).toLowerCase()==='cancelled'}>
+                          Cancel
+                        </button>
+                      </div>
+                      <div class="opacity-70">{t.text}</div>
+                      <Show when={crd()}>
+                        <div class="mt-2 text-xs">
+                          <div class="font-semibold">CRD</div>
+                          <div>phase: {(crd() as any)?.status?.phase || ''}</div>
+                          <div class="mt-1">
+                            <For each={conditions()}>
+                              {(c: any) => (
+                                <div>- {c.type}: {c.status} {c.reason ? `(${c.reason})` : ''} {c.lastTransitionTime ? `@ ${fmtTime(c.lastTransitionTime)}` : ''}</div>
+                              )}
+                            </For>
+                          </div>
+                        </div>
+                      </Show>
+                      <Show when={k8s()}>
+                        <div class="mt-2 text-xs">
+                          <div class="font-semibold">K8s</div>
+                          <div>phase: {(k8s() as any)?.phase}</div>
+                          <div>ready: {(k8s() as any)?.ready}/{(k8s() as any)?.desired}</div>
+                        </div>
+                      </Show>
                     </div>
-                    <div class="opacity-70">{t.text}</div>
-                  </div>
-                )}
+                  )
+                }}
               </For>
             </div>
           </Show>

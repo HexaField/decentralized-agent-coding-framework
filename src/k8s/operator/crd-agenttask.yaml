@@ -1,0 +1,50 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agenttasks.agents.hexa.dev
+spec:
+  group: agents.hexa.dev
+  scope: Namespaced
+  names:
+    plural: agenttasks
+    singular: agenttask
+    kind: AgentTask
+    shortNames: [atask]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                orgId: { type: string }
+                task: { type: string }
+                image: { type: string }
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                cancel: { type: boolean }
+                ttlSecondsAfterFinished: { type: integer, format: int32, minimum: 0 }
+              required: [orgId, task]
+            status:
+              type: object
+              properties:
+                phase: { type: string }
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type: { type: string }
+                      status: { type: string }
+                      reason: { type: string }
+                      message: { type: string }
+                      lastTransitionTime: { type: string, format: date-time }
+                agentName: { type: string }
+                artifactPath: { type: string }
+                observedGeneration: { type: integer, format: int64 }

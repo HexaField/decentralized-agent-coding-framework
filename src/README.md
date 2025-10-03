@@ -25,9 +25,9 @@ This MVP runs a local orchestrator and agent pods across a Headscale/Tailscale m
    ./scripts/create_org_cluster.sh acme
 5. Seed demo project:
    ./scripts/seed_demo_project.sh
-6. Deploy an agent:
-   ./scripts/deploy_agent.sh acme "Hello world web task"
-7. Open code‑server for the agent:
+6. Schedule a task (Operator will reconcile the agent):
+   Use the Dashboard chat to send a task for org "acme".
+7. Open code‑server for the agent (via orchestrator proxy):
    ./scripts/open_code_server.sh acme <agent-name>
    Then browse http://127.0.0.1:8443 and use the password from CODE_SERVER_PASSWORD (default: password).
 
@@ -37,14 +37,14 @@ Run the same steps on 2–3 machines. Edit `orchestrator/configs/orchestrator.ex
 
 ## What’s inside
 
-- Local orchestrator (Go) exposing /health, /peers, /clusters, /schedule, /tasks, /agents
+- Local orchestrator (Go) exposing /health, /peers, /clusters, /schedule, /tasks, /agents; creates AgentTask CRs
 - Agent (Go) with code-server runtime and simple workflow hook
 - Dashboard (Node/Express + static UI) listing users, agents, devices, clusters, tasks, PRs
 - Spec‑Kit and Radicle stubs for tasks and PRs
 
 ## Docs
 
-- Architecture overview: `../assets/ARCHITECTURE.md`
+- Architecture overview: `../architecture.md`
 
 ## Teardown
 
@@ -53,5 +53,5 @@ Run the same steps on 2–3 machines. Edit `orchestrator/configs/orchestrator.ex
 
 ## Make targets
 
-- make test:local — spins a single org cluster, schedules one agent, verifies PR stub
-- make test:multi — requires 2 peers in config; schedules remote agent by label
+- make test:local — spins a single org cluster, schedules a task (Operator deploys agent)
+- make test:multi — requires 2 peers in config; schedules remote task by label

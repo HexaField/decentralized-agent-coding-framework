@@ -635,6 +635,29 @@ app.get('/api/taskLogs', async (req, res) => {
     res.status(502).json({ error: String(e) })
   }
 })
+// Task status and cancel proxies
+app.get('/api/taskStatus', async (req, res) => {
+  const id = String(req.query.id || '')
+  if (!id) return res.status(400).json({ error: 'missing id' })
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/tasks/status?id=${encodeURIComponent(id)}`, { headers })
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
+  }
+})
+app.post('/api/task/cancel', async (req, res) => {
+  try {
+    const id = (req.body && String(req.body.id || '').trim()) || ''
+    if (!id) return res.status(400).json({ error: 'missing id' })
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/tasks/cancel`, { method: 'POST', headers, body: { id } })
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
+  }
+})
 app.get('/api/agentLogs', async (req, res) => {
   const name = String(req.query.name || '')
   if (!name) return res.status(400).json({ error: 'missing name' })
@@ -642,6 +665,24 @@ app.get('/api/agentLogs', async (req, res) => {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
     const out = await fetchJSON(`${ORCH_URL}/agents/logs?name=${encodeURIComponent(name)}`, {
       headers,
+    })
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ error: String(e) })
+  }
+})
+
+// Namespace prepare proxy
+app.post('/api/k8s/prepare', async (req, res) => {
+  try {
+    const org = (req.body && String(req.body.org || '').trim()) || ''
+    const namespace = (req.body && String(req.body.namespace || '').trim()) || ''
+    if (!org) return res.status(400).json({ error: 'missing org' })
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/k8s/prepare`, {
+      method: 'POST',
+      headers,
+      body: { org, namespace },
     })
     res.json(out)
   } catch (e) {

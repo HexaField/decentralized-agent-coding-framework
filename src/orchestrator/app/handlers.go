@@ -17,6 +17,13 @@ import (
     "sync"
     "time"
 )
+import (
+    cfg "orchestrator/config"
+    k8sdep "orchestrator/k8s"
+    k8sfactory "orchestrator/k8sclient"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    corev1 "k8s.io/api/core/v1"
+)
 
 type Health struct {
     Status string `json:"status"`
@@ -92,6 +99,12 @@ func pickPort() int {
 
 // small helper for int->string
 func itoa(i int) string { return fmt.Sprintf("%d", i) }
+
+func getenvDefault(k, def string) string {
+    v := os.Getenv(k)
+    if v == "" { return def }
+    return v
+}
 
 // ensureEditorForward starts (or returns) a kubectl port-forward to the agent's Service
 func ensureEditorForward(name, org string) (int, error) {
@@ -317,58 +330,55 @@ func registerHandlers(mux *http.ServeMux) {
         writeJSON(w, map[string]any{"ok": true, "path": outPath})
     }, "ORCHESTRATOR_TOKEN"))
 
-    // Deploy an agent into the Talos org using the helper script.
+    // Deploy an agent into the org cluster.
+    // CRD-only architecture: agents are managed by the Operator when tasks are scheduled.
+    // This endpoint remains for compatibility and returns a no-op success.
     // POST /agents/deploy { org: string, image?: string }
     mux.HandleFunc("/agents/deploy", requireToken(func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
-        var req struct{ Org, Image, OrchestratorURL string }
+        // For CRD-only mode, no imperative/script deployment is performed.
+        // The Operator is responsible for managing agent Pods when tasks are submitted.
+        // Return a no-op success so callers can proceed without error.
+        writeJSON(w, map[string]any{
+            "ok": true,
+            "mode": cfg.ModeCRDOperator,
+            "note": "agents are managed by the Operator; deploy is a no-op",
+        })
+    }, "ORCHESTRATOR_TOKEN"))
+
+    // Lightweight k8s reachability endpoint.
+    // GET /k8s/ping?org=<org>
+    mux.HandleFunc("/k8s/ping", func(w http.ResponseWriter, r *http.Request) {
+        org := strings.TrimSpace(r.URL.Query().Get("org"))
+        if org == "" { http.Error(w, "missing org", 400); return }
+        cs, _, err := k8sfactory.LoadForOrg(org)
+        if err != nil { http.Error(w, err.Error(), 500); return }
+        ver, err := k8sfactory.Ping(r.Context(), cs)
+        if err != nil { http.Error(w, err.Error(), 502); return }
+        writeJSON(w, map[string]any{"org": org, "version": ver})
+    })
+
+    // Ensure base namespace exists for agents/operator
+    // POST /k8s/prepare { org, namespace? }
+    mux.HandleFunc("/k8s/prepare", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Org, Namespace string }
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         if strings.TrimSpace(req.Org) == "" { http.Error(w, "missing org", 400); return }
-        // Resolve script path relative to repository root in container
-        root := os.Getenv("WORKSPACE_DIR"); if root == "" { root = "/workspace" }
-        script := root + "/scripts/deploy_agent_talos.sh"
-        if _, err := os.Stat(script); err != nil {
-            http.Error(w, "deploy script not found", 500); return
-        }
-        orchURL := req.OrchestratorURL
-        if orchURL == "" {
-            // Default to our public base URL if present; otherwise use container host/port mapping
-            // In container, the orchestrator listens on 8080; clusters must resolve this
-            orchURL = os.Getenv("PUBLIC_ORCHESTRATOR_URL")
-            if orchURL == "" { orchURL = "http://orchestrator.tailnet:18080" }
-        }
-        token := os.Getenv("ORCHESTRATOR_TOKEN")
-        // If kubeconfig is available in shared state, pass it
-        stateKcfg := "/state/kube/" + req.Org + ".config"
-        if _, err := os.Stat(stateKcfg); err == nil {
-            os.Setenv("KUBECONFIG", stateKcfg)
-        }
-        // Prepare command
-        image := strings.TrimSpace(req.Image)
-        if image == "" { image = "mvp-agent:latest" }
-        cmd := exec.Command("bash", script, req.Org, image)
-        // Pass env that the script requires
-    cmd.Env = append(os.Environ(),
-            "ORCHESTRATOR_URL="+orchURL,
-            "ORCHESTRATOR_TOKEN="+token,
-        )
-        // Capture output for response
-        out, err := cmd.CombinedOutput()
+        ns := strings.TrimSpace(req.Namespace)
+        if ns == "" { ns = "mvp-agents" }
+        cs, _, err := k8sfactory.LoadForOrg(req.Org)
+        if err != nil { http.Error(w, err.Error(), 500); return }
+        // Create Namespace if not exists
+        _, err = cs.CoreV1().Namespaces().Get(r.Context(), ns, metav1.GetOptions{})
         if err != nil {
-            code := 1
-            if ee, ok := err.(*exec.ExitError); ok {
-                code = ee.ExitCode()
+            // Try create
+            _, cerr := cs.CoreV1().Namespaces().Create(r.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}, metav1.CreateOptions{})
+            if cerr != nil {
+                http.Error(w, cerr.Error(), 502); return
             }
-            w.WriteHeader(500)
-            writeJSON(w, map[string]any{
-                "ok": false,
-                "error": err.Error(),
-                "exitCode": code,
-                "output": string(out),
-            })
-            return
         }
-        writeJSON(w, map[string]any{"ok": true, "exitCode": 0, "output": string(out)})
+        writeJSON(w, map[string]any{"ok": true, "namespace": ns})
     }, "ORCHESTRATOR_TOKEN"))
 
     // Proxy endpoint to expose a local forwarded editor port over the orchestrator's HTTP port.
@@ -430,6 +440,28 @@ func registerHandlers(mux *http.ServeMux) {
         if req.Org == "" || req.Task == "" { http.Error(w, "missing org/task", 400); return }
         id := time.Now().Format("20060102-150405.000")
         t := Task{ID: id, Org: req.Org, Text: req.Task, Status: "scheduled", AgentHint: req.AgentHint, CreatedAt: time.Now()}
+    mode := cfg.GetSchedulerMode()
+        // CRD-operator mode: create an AgentTask CR
+    if mode == cfg.ModeCRDOperator {
+            _, restCfg, err := k8sfactory.LoadForOrg(req.Org)
+            if err == nil && restCfg != nil {
+                env := map[string]any{
+                    "ORG_NAME": req.Org,
+                    "ORCHESTRATOR_URL": os.Getenv("PUBLIC_ORCHESTRATOR_URL"),
+                    "ORCHESTRATOR_TOKEN": os.Getenv("ORCHESTRATOR_TOKEN"),
+                    "CODE_SERVER_PASSWORD": getenvDefault("CODE_SERVER_PASSWORD", "password"),
+                    "CODE_SERVER_AUTH_HEADER": getenvDefault("CODE_SERVER_AUTH_HEADER", "X-Agent-Auth"),
+                    "CODE_SERVER_TOKEN": getenvDefault("CODE_SERVER_TOKEN", "password"),
+                }
+                spec := map[string]any{"orgId": req.Org, "task": req.Task, "env": env}
+                name := "atask-" + strings.ReplaceAll(id, ".", "-")
+                if obj, cerr := k8sdep.CreateAgentTask(r.Context(), restCfg, "mvp-agents", name, spec); cerr == nil {
+                    // hint agent name if the controller will set it based on org
+                    if obj != nil { t.AgentHint = name }
+                    t.Status = "submitted"
+                }
+            }
+        }
         tasksMu.Lock(); tasks[id] = t; tasksMu.Unlock()
         log.Printf("scheduled task id=%s org=%s text=%q", id, req.Org, req.Task)
         writeJSON(w, t)
@@ -440,6 +472,23 @@ func registerHandlers(mux *http.ServeMux) {
         out := make([]Task, 0, len(tasks))
         for _, t := range tasks { out = append(out, t) }
         writeJSON(w, out)
+    })
+    // GET /tasks/status?id=<id>
+    mux.HandleFunc("/tasks/status", func(w http.ResponseWriter, r *http.Request) {
+        id := r.URL.Query().Get("id")
+        if id == "" { http.Error(w, "missing id", 400); return }
+        tasksMu.RLock(); t, ok := tasks[id]; tasksMu.RUnlock()
+        if !ok { http.Error(w, "not found", 404); return }
+    mode := cfg.GetSchedulerMode()
+        // CRD mode: read AgentTask status
+    if mode == cfg.ModeCRDOperator {
+            if _, restCfg, err := k8sfactory.LoadForOrg(t.Org); err == nil {
+                if obj, gerr := k8sdep.GetAgentTask(r.Context(), restCfg, "mvp-agents", "atask-"+strings.ReplaceAll(id, ".", "-")); gerr == nil && obj != nil {
+                    writeJSON(w, map[string]any{"task": t, "crd": obj.Object}); return
+                }
+            }
+        }
+        writeJSON(w, map[string]any{"task": t})
     })
     mux.HandleFunc("/tasks/claim", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
@@ -474,6 +523,31 @@ func registerHandlers(mux *http.ServeMux) {
         t.Status = req.Status; tasks[req.ID] = t
         writeJSON(w, t)
     })
+    // POST /tasks/cancel { id }
+    mux.HandleFunc("/tasks/cancel", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ ID string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        if req.ID == "" { http.Error(w, "missing id", 400); return }
+        tasksMu.Lock(); t, ok := tasks[req.ID]; tasksMu.Unlock()
+        if !ok { http.Error(w, "not found", 404); return }
+    mode := cfg.GetSchedulerMode()
+    // CRD mode: set cancel=true on AgentTask CR
+        if mode == cfg.ModeCRDOperator {
+            if _, restCfg, err := k8sfactory.LoadForOrg(t.Org); err == nil {
+                name := "atask-" + strings.ReplaceAll(req.ID, ".", "-")
+                if _, uerr := k8sdep.SetAgentTaskCancel(r.Context(), restCfg, "mvp-agents", name, true); uerr != nil {
+                    http.Error(w, uerr.Error(), 502); return
+                }
+            } else {
+                // No kubeconfig available: degrade gracefully and still cancel locally
+                log.Printf("cancel: skipping CRD update for org=%s: %v", t.Org, err)
+            }
+        }
+        // Update local task status
+        tasksMu.Lock(); t.Status = "cancelled"; tasks[req.ID] = t; tasksMu.Unlock()
+        writeJSON(w, t)
+    }, "ORCHESTRATOR_TOKEN"))
     mux.HandleFunc("/tasks/log", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
         var req struct{ ID, Line string }
@@ -517,6 +591,17 @@ func registerHandlers(mux *http.ServeMux) {
         out := make([]Agent, 0, len(agents))
         for _, a := range agents { out = append(out, a) }
         writeJSON(w, out)
+    })
+    // GET /agents/status?org=<org>&name=<name>
+    mux.HandleFunc("/agents/status", func(w http.ResponseWriter, r *http.Request) {
+        org := r.URL.Query().Get("org")
+        name := r.URL.Query().Get("name")
+        if org == "" || name == "" { http.Error(w, "missing org/name", 400); return }
+        cs, _, err := k8sfactory.LoadForOrg(org)
+        if err != nil { http.Error(w, err.Error(), 500); return }
+        st, err := k8sdep.GetAgentStatus(r.Context(), cs, "mvp-agents", name)
+        if err != nil { http.Error(w, err.Error(), 502); return }
+        writeJSON(w, st)
     })
     mux.HandleFunc("/agents/register", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
