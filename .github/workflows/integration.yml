@@ -16,6 +16,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: src/dashboard/package-lock.json
       - name: Build orchestrator image
         uses: docker/build-push-action@v6
         with:
@@ -37,7 +39,9 @@ jobs:
           done
       - name: Install dashboard deps
         working-directory: src/dashboard
-        run: npm ci
+        run: |
+          rm -rf node_modules package-lock.json
+          npm ci --no-fund --no-audit
       - name: Run integration tests
         working-directory: src/dashboard
         env:

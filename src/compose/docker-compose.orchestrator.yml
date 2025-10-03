@@ -33,6 +33,7 @@ services:
       LOCAL_ENSURE: "0"
     volumes:
       - ../dashboard:/app
+      - dashboard_node_modules:/app/node_modules
       - ../state:/state
     ports:
       - "8090:8090"
@@ -42,3 +43,6 @@ services:
 networks:
   mvp:
     driver: bridge
+
+volumes:
+  dashboard_node_modules:
