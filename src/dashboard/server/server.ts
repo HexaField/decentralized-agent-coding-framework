@@ -746,53 +746,196 @@ app.get('/api/setup/stream', async (req, res) => {
       let joinKey = TS_KEY || ''
       if (!joinKey && effectiveMode === 'local') {
         send('step', 'Generating Headscale preauth key (local)')
-        const runDocker = async (args: string[]) =>
-          await new Promise<string>((resolve, reject) => {
-            const proc = spawn('docker', args, { env: process.env })
-            let out = ''
-            proc.stdout.on('data', (d) => (out += String(d)))
-            proc.stderr.on('data', (d) => (out += String(d)))
-            proc.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(out))))
-          })
+        // Execute headscale CLI inside the running container with timeout/retries
+        const runHeadscale = async (subcmd: string[]) => {
+          const start = Date.now()
+          const deadline = start + 30_000 // 30s overall
+          let lastErr: any = null
+          while (Date.now() < deadline) {
+            try {
+              const out = await new Promise<string>((resolve, reject) => {
+                const args = [
+                  'exec',
+                  'headscale-local',
+                  'headscale',
+                  '-c',
+                  '/etc/headscale/cli.yaml',
+                  ...subcmd,
+                ]
+                const proc = spawn('docker', args, { env: process.env })
+                let out = ''
+                const timer = setTimeout(() => {
+                  try {
+                    proc.kill('SIGKILL')
+                  } catch {}
+                  reject(new Error('timeout'))
+                }, 10_000) // 10s per attempt
+                proc.stdout.on('data', (d) => (out += String(d)))
+                proc.stderr.on('data', (d) => (out += String(d)))
+                proc.on('close', (code) => {
+                  clearTimeout(timer)
+                  code === 0 ? resolve(out) : reject(new Error(out || String(code)))
+                })
+              })
+              return out
+            } catch (e) {
+              lastErr = e
+              await new Promise((r) => setTimeout(r, 1000))
+            }
+          }
+          throw lastErr || new Error('headscale exec failed')
+        }
         try {
-          await runDocker([
-            'run',
-            '--rm',
-            '--network',
-            'container:headscale-local',
-            '-v',
-            'headscale-data:/var/lib/headscale',
-            '-v',
-            `${path.join(srcDir, '_tmp', 'headscale')}` + ':/etc/headscale:ro',
-            'headscale/headscale:0.26.1',
-            '-c',
-            '/etc/headscale/config.yaml',
-            'users',
-            'create',
-            'default',
-          ]).catch(() => '')
-          const out = await runDocker([
-            'run',
-            '--rm',
-            '--network',
-            'container:headscale-local',
-            '-v',
-            'headscale-data:/var/lib/headscale',
-            '-v',
-            `${path.join(srcDir, '_tmp', 'headscale')}` + ':/etc/headscale:ro',
-            'headscale/headscale:0.26.1',
-            '-c',
-            '/etc/headscale/config.yaml',
+          await runHeadscale(['users', 'create', 'default']).catch(() => '')
+
+          // Resolve the numeric user ID for the 'default' user, as v0.26 CLI requires --user <uint>
+          let userId = 0
+          try {
+            const usersJson = await runHeadscale(['users', 'list', '-o', 'json'])
+            try {
+              const parsed = JSON.parse(usersJson)
+              const arr: any[] = Array.isArray(parsed)
+                ? parsed
+                : Array.isArray((parsed as any).users)
+                  ? (parsed as any).users
+                  : []
+              for (const u of arr) {
+                const name = (u && (u.name || u.Name)) || ''
+                const idVal = u && (u.id ?? u.ID)
+                const idNum = Number(idVal)
+                if (String(name).toLowerCase() === 'default' && Number.isFinite(idNum)) {
+                  userId = idNum
+                  break
+                }
+              }
+            } catch {
+              // ignore JSON parse error; will try fallback below
+            }
+          } catch {
+            // ignore; try fallback userId
+          }
+          if (!userId || !Number.isFinite(userId)) {
+            // best-effort fallback: Headscale often creates the first user with ID=1
+            userId = 1
+            send('log', 'Could not resolve user ID for default; trying --user 1')
+          }
+          const out = await runHeadscale([
             'preauthkeys',
             'create',
             '--reusable',
             '--expiration',
             '48h',
             '--user',
-            'default',
+            String(userId),
+            '-o',
+            'json',
           ])
-          const km = out.match(/key:\s*(tskey-[A-Za-z0-9]+)/)
-          if (km) joinKey = km[1]
+          // Extract key robustly from JSON, falling back to list and regex
+          const findTsKeyDeep = (obj: any): string | '' => {
+            if (!obj) return ''
+            if (typeof obj === 'string') return obj.startsWith('tskey-') ? obj : ''
+            if (Array.isArray(obj)) {
+              for (const v of obj) {
+                const k = findTsKeyDeep(v)
+                if (k) return k
+              }
+              return ''
+            }
+            if (typeof obj === 'object') {
+              for (const k of Object.keys(obj)) {
+                const v = (obj as any)[k]
+                const found = findTsKeyDeep(v)
+                if (found) return found
+              }
+            }
+            return ''
+          }
+          const findAnyKeyField = (obj: any): string | '' => {
+            if (!obj) return ''
+            if (typeof obj === 'object' && !Array.isArray(obj)) {
+              for (const k of Object.keys(obj)) {
+                if (k.toLowerCase() === 'key' && typeof (obj as any)[k] === 'string') {
+                  const val = String((obj as any)[k]).trim()
+                  if (val) return val
+                }
+              }
+              for (const k of Object.keys(obj)) {
+                const v = (obj as any)[k]
+                const deep = findAnyKeyField(v)
+                if (deep) return deep
+              }
+            } else if (Array.isArray(obj)) {
+              for (const v of obj) {
+                const deep = findAnyKeyField(v)
+                if (deep) return deep
+              }
+            }
+            return ''
+          }
+          let parsedAny: any = null
+          try {
+            parsedAny = JSON.parse(out)
+            let k = ''
+            // Prefer explicit 'key' field, accept any string
+            if (parsedAny && typeof parsedAny === 'object') {
+              const direct = parsedAny.key || parsedAny.Key
+              if (typeof direct === 'string' && direct.trim()) k = direct.trim()
+            }
+            if (!k) k = findAnyKeyField(parsedAny)
+            if (!k) k = findTsKeyDeep(parsedAny)
+            if (k) joinKey = k
+          } catch {}
+          if (!joinKey) {
+            // Fallback: list keys and choose the newest for the user
+            try {
+              const listOut = await runHeadscale([
+                'preauthkeys',
+                'list',
+                '--user',
+                String(userId),
+                '-o',
+                'json',
+              ])
+              try {
+                const lj = JSON.parse(listOut)
+                const findNewest = (arr: any[]): string | '' => {
+                  let best = ''
+                  let bestTime = 0
+                  for (const item of arr) {
+                    let keyStr = ''
+                    const direct = item && (item.key || item.Key)
+                    if (typeof direct === 'string' && direct.trim()) keyStr = direct.trim()
+                    if (!keyStr) keyStr = findAnyKeyField(item)
+                    if (!keyStr) keyStr = findTsKeyDeep(item)
+                    if (!keyStr) continue
+                    const created =
+                      Date.parse(item.CreatedAt || item.created_at || item.created || '') ||
+                      Date.now()
+                    if (!best || created >= bestTime) {
+                      best = keyStr
+                      bestTime = created
+                    }
+                  }
+                  return best
+                }
+                if (Array.isArray(lj)) {
+                  const kk = findNewest(lj)
+                  if (kk) joinKey = kk
+                } else if (Array.isArray((lj as any).preauthkeys)) {
+                  const kk = findNewest((lj as any).preauthkeys)
+                  if (kk) joinKey = kk
+                }
+              } catch {}
+            } catch {}
+          }
+          if (!joinKey) {
+            const m1 = out.match(/\btskey-[A-Za-z0-9]+\b/)
+            if (m1) joinKey = m1[0]
+          }
+          if (!joinKey) {
+            const m2 = out.match(/\b[0-9a-fA-F]{16,}\b/)
+            if (m2) joinKey = m2[0]
+          }
           if (!joinKey) throw new Error('failed to parse generated key')
           send('log', `Generated TS_AUTHKEY for local Headscale`)
         } catch (e) {

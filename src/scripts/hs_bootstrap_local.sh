@@ -42,6 +42,31 @@ dns:
   magic_dns: false
 YAML
 
+# A separate CLI config used by headscale CLI inside the container namespace, where the
+# server is reachable at 127.0.0.1:8080 regardless of the host-mapped port.
+cat > "${CONF_DIR}/cli.yaml" <<YAML
+server_url: http://127.0.0.1:8080
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 127.0.0.1:9090
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+dns:
+  override_local_dns: false
+  magic_dns: false
+YAML
+
 docker run -d --name headscale-local \
   -p ${HEADSCALE_BIND_IP}:${HEADSCALE_PORT}:8080 \
   -v headscale-data:/var/lib/headscale \
@@ -58,6 +83,6 @@ if [ -z "${OK:-}" ]; then
   echo "Warning: Headscale health check failed; continuing in best-effort mode."
 fi
 
-# Org/user/key management is handled dynamically by the dashboard now.
+# Note: Headscale CLI readiness is validated by the dashboard service with retries to avoid long blocking here.
 
 echo "Local Headscale bootstrap complete at ${HEADSCALE_URL}"

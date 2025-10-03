@@ -31,6 +31,8 @@ async function readSSE(url: string, opts?: RequestInit) {
       const dataMatch = part.match(/data:\s*([\s\S]*)/) // data may span lines
       if (evMatch && dataMatch) {
         events.push({ event: evMatch[1].trim(), data: dataMatch[1] })
+        // verbose log to help reproduce UI failures
+        console.log(`[sse] ${evMatch[1].trim()} ${dataMatch[1].slice(0, 200)}`)
       }
     }
     // Stop if done event received
@@ -62,6 +64,11 @@ describe('Setup flows (real tailscale/headscale)', () => {
   let base: string = 'http://127.0.0.1:0'
   beforeAll(async () => {
     process.env.TEST_FAST_SETUP = '1'
+    // Mirror UI/dev env so bootstrap picks the same dynamic port behavior and dev flags
+    process.env.UI_DEV = '1'
+    // Make port selection deterministic between UI and test; match UI symptoms where 8080 may be in use
+    process.env.HEADSCALE_BIND_IP = process.env.HEADSCALE_BIND_IP || '127.0.0.1'
+    process.env.HEADSCALE_PORT = process.env.HEADSCALE_PORT || '8081'
     if (!run) return
     await new Promise<void>((resolve) => {
       server = http.createServer(app)

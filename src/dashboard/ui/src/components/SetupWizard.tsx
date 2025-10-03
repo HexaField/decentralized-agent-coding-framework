@@ -45,7 +45,7 @@ export default function SetupWizard(props: Props): JSX.Element {
   // Client-side required-field checks
   const canJoin = () => Boolean(hsUrl() && tsKey() && tsHost())
   // Allow local create without Headscale URL (the server will discover it)
-  const canCreate = () => Boolean(tsHost() && (hsUrl() || hsSsh() || tsKey()))
+  const canCreate = () => Boolean(tsHost()) // && (hsUrl() || hsSsh() || tsKey()))
 
   async function start(flow: 'connect' | 'create') {
     const v = await validate(flow)

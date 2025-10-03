@@ -30,7 +30,44 @@ if ! command -v tailscale >/dev/null 2>&1; then
 fi
 
 echo "Joining Tailscale via ${HEADSCALE_URL} as ${TS_HOSTNAME}"
-sudo tailscale up --login-server="${HEADSCALE_URL}" --authkey="${TS_AUTHKEY}" \
-  --hostname="${TS_HOSTNAME}" --accept-dns=false --ssh
-echo "Tailscale status:"
-tailscale status
+
+# Prefer non-interactive sudo; fall back to direct if permitted. Fail fast if sudo would prompt.
+RUN_UP=(tailscale up --login-server="${HEADSCALE_URL}" --authkey="${TS_AUTHKEY}" \
+  --hostname="${TS_HOSTNAME}" --accept-dns=false --ssh)
+
+if command -v sudo >/dev/null 2>&1; then
+  if sudo -n true 2>/dev/null; then
+    if ! sudo -n "${RUN_UP[@]}"; then
+      echo "tailscale up failed (sudo)." >&2
+      exit 1
+    fi
+  else
+    # No passwordless sudo; avoid hanging on prompt
+    echo "sudo requires a password; cannot run tailscale up non-interactively. Grant passwordless sudo or run from Dashboard 'connect' with existing key." >&2
+    exit 1
+  fi
+else
+  if ! "${RUN_UP[@]}"; then
+    echo "tailscale up failed." >&2
+    exit 1
+  fi
+fi
+
+# Poll for connectivity up to 60s to avoid indefinite hang
+DEADLINE=$((SECONDS + 60))
+CONNECTED=0
+while (( SECONDS < DEADLINE )); do
+  if out=$(tailscale status --json 2>/dev/null); then
+    if echo "$out" | grep -q '"Self"'; then
+      CONNECTED=1; break
+    fi
+  fi
+  sleep 2
+done
+
+if (( CONNECTED == 0 )); then
+  echo "tailscale did not connect within timeout" >&2
+  exit 1
+fi
+
+echo "Tailscale connected."
