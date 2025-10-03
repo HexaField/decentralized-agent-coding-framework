@@ -7,10 +7,14 @@ log(){ echo "[prereqs] $*"; }
 
 need(){ command -v "$1" >/dev/null 2>&1 || return 0; }
 
-install_k3d(){
-  if ! command -v k3d >/dev/null 2>&1; then
-    log "Installing k3d"
-    curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+install_talosctl(){
+  if ! command -v talosctl >/dev/null 2>&1; then
+    log "Installing talosctl"
+    case "$OS" in
+      macos) brew install siderolabs/tap/talosctl || true;;
+      linux) curl -sL https://talos.dev/install | sh || true;;
+      *) log "Unsupported OS for talosctl";;
+    esac
   fi
 }
 
@@ -43,7 +47,7 @@ install_docker_compose(){
   fi
 }
 
-install_k3d
+install_talosctl
 install_kubectl
 install_tailscale
 install_docker_compose

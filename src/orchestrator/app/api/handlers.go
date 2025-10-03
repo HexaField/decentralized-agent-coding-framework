@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
     "encoding/json"
@@ -13,7 +13,7 @@ type Health struct {
     Host   string `json:"host"`
 }
 
-func registerHandlers(mux *http.ServeMux) {
+func RegisterHandlers(mux *http.ServeMux) {
     mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         h := Health{Status: "ok", Host: hostname()}
         writeJSON(w, h)

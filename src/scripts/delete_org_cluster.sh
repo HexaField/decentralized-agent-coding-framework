@@ -3,5 +3,5 @@ set -euo pipefail
 ORG=${1:-}
 if [[ -z "$ORG" ]]; then echo "Usage: $0 <org>"; exit 1; fi
 NAME="org-$ORG"
-echo "Deleting k3d cluster $NAME"
-k3d cluster delete "$NAME" || true
+echo "delete_org_cluster.sh is deprecated with Talos mode. Tear down Talos nodes using talosctl reset/apply as appropriate."
+exit 1

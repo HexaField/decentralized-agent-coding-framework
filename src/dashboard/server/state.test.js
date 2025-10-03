@@ -1,17 +1,10 @@
-const assert = require('assert')
-const request = require('supertest')
-const express = require('express')
-const appFactory = () => {
-  process.env.ORCHESTRATOR_URL = 'http://127.0.0.1:9' // invalid, will error and fall back
-  delete require.cache[require.resolve('./server')]
-  const app = require('express')()
-  return app
-}
+import request from 'supertest'
+import app from './index.js'
 
-describe('dashboard /api/health', () => {
-  it('returns ok', async () => {
-    const app = express()
-    app.get('/api/health', (req,res)=> res.json({status:'ok'}))
-    await request(app).get('/api/health').expect(200)
+describe('dashboard basic routes', () => {
+  it('GET /api/health returns ok', async () => {
+    const res = await request(app).get('/api/health')
+    expect(res.status).toBe(200)
+    expect(res.body).toHaveProperty('status', 'ok')
   })
 })

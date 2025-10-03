@@ -1,3 +1,7 @@
 .env
 node_modules
 dist
+orgs.yaml
+_tmp
+*.db
+.DS_Store

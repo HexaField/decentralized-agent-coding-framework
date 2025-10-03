@@ -7,19 +7,17 @@ services:
       dockerfile: docker/orchestrator.Dockerfile
     container_name: mvp-orchestrator
     environment:
-      - ORCHESTRATOR_TOKEN=${ORCHESTRATOR_TOKEN}
-      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
-      - ORCHESTRATOR_CONFIG=/app/configs/orchestrator.example.yaml
-      - K3D_API_HOST=host.docker.internal
-      - WORKSPACE_DIR=/workspace
+      ORCHESTRATOR_TOKEN: ${ORCHESTRATOR_TOKEN}
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN}
+      ORCHESTRATOR_CONFIG: /app/configs/orchestrator.example.yaml
+      WORKSPACE_DIR: /workspace
     volumes:
       - ../orchestrator/configs:/app/configs:ro
       - ../state:/state
-      - ../scripts:/scripts:ro
       - ../:/workspace:ro
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "0.0.0.0:18080:8080"
+      - "18080:8080"
     networks:
       - mvp
 
@@ -28,20 +26,22 @@ services:
     working_dir: /app
     command: ["sh", "-lc", "npm ci && npx tsx server/server.ts"]
     environment:
-      - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
-      - ORCHESTRATOR_URL=http://mvp-orchestrator:8080
-      - ORCHESTRATOR_TOKEN=${ORCHESTRATOR_TOKEN}
-      - UI_DEV=0
-      - LOCAL_ENSURE=0
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN}
+      ORCHESTRATOR_URL: http://mvp-orchestrator:8080
+      ORCHESTRATOR_TOKEN: ${ORCHESTRATOR_TOKEN}
+      UI_DEV: "0"
     volumes:
       - ../dashboard:/app
-      - ../scripts:/scripts:ro
+      - dashboard_node_modules:/app/node_modules
       - ../state:/state
     ports:
-      - "0.0.0.0:8090:8090"
+      - "8443:8090"
     networks:
       - mvp
 
 networks:
   mvp:
     driver: bridge
+
+volumes:
+  dashboard_node_modules:

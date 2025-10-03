@@ -15,7 +15,7 @@ func main() {
     agentID := getHostname()
     orchURL := os.Getenv("ORCHESTRATOR_URL")
     orchTok := os.Getenv("ORCHESTRATOR_TOKEN")
-    if orchURL == "" { orchURL = "http://host.k3d.internal:18080" }
+    if orchURL == "" { orchURL = "http://127.0.0.1:18080" }
     log.Printf("agent starting for org=%s", org)
     client := &http.Client{ Timeout: 10 * time.Second }
     // connectivity check

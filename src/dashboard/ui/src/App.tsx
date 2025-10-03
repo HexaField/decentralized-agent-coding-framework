@@ -1,11 +1,14 @@
 import { createEffect, createMemo, createSignal, For, Show, onCleanup, onMount } from 'solid-js'
+import OrgSelect from './components/OrgSelect'
+import OrgManager from './components/OrgManager'
+import SetupWizard from './components/SetupWizard'
+import OrgWizard from './components/OrgWizard'
 
 // Determine server base URL. Prefer env override, else:
 // - If running under Vite dev (port 5173), use same host on port 8090
 // - Otherwise, same-origin
 const SERVER_BASE = (() => {
-  const anyEnv = (import.meta as any)?.env
-  const fromEnv = anyEnv?.VITE_SERVER_URL as string | undefined
+  const fromEnv = import.meta.env.VITE_SERVER_URL
   if (fromEnv) return fromEnv.replace(/\/$/, '')
   const l = window.location
   if (l.port === '5173') return `https://${l.hostname}:8090`
@@ -13,7 +16,7 @@ const SERVER_BASE = (() => {
 })()
 
 // Dev debug stream
-const isDev = true //Boolean((import.meta as any)?.env?.DEV)
+const isDev = Boolean((import.meta as any)?.env?.DEV)
 
 // Types
 type Task = { id: string; status: string; text?: string }
@@ -32,7 +35,15 @@ type Tab = 'Users' | 'Agents' | 'Projects' | 'Tasks' | 'Network'
 export default function App() {
   // Global state
   const [activeTab, setActiveTab] = createSignal<Tab>('Agents')
-  const [org, setOrg] = createSignal('acme')
+  const [org, setOrg] = createSignal('')
+  const [orgs, setOrgs] = createSignal<string[]>([])
+  const [showSetup, setShowSetup] = createSignal<'none' | 'create' | 'connect'>('none')
+  const [showOrgManager, setShowOrgManager] = createSignal(false)
+  const [checking, setChecking] = createSignal(true)
+  const [showOrgWizard, setShowOrgWizard] = createSignal(false)
+  const [validated, setValidated] = createSignal(false)
+  // reserved for future TS checks; validated gate covers it for now
+  const dashboardToken = import.meta.env.VITE_DASHBOARD_TOKEN || 'dashboard-secret'
 
   // Theme state: 'light' | 'dark' | 'system'
   type Theme = 'light' | 'dark' | 'system'
@@ -117,23 +128,6 @@ export default function App() {
     )
     return () => es.close()
   })
-
-  async function manualEnsure() {
-    try {
-      const res = await fetch(`${SERVER_BASE}/api/debug/ensure`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Auth-Token': (import.meta as any)?.env?.VITE_DASHBOARD_TOKEN || '',
-        },
-        body: JSON.stringify({ org: org(), prompt: 'ensure via debug' }),
-      })
-      const json = await res.json()
-      setDebugLines((p) => [...p, `[ensure] ${JSON.stringify(json)}`])
-    } catch (e: any) {
-      setDebugLines((p) => [...p, `[ensure-error] ${String(e)}`])
-    }
-  }
 
   const editorSrc = createMemo(() => {
     const name = selectedAgent()
@@ -231,6 +225,31 @@ export default function App() {
     onCleanup(() => clearInterval(t))
   })
 
+  // Gating: check server status for tailscale connectivity
+  async function validateAndDetect() {
+    try {
+      setChecking(true)
+      const s = await fetch(`${SERVER_BASE}/api/setup/status`).then((r) => r.json())
+      setValidated(Boolean(s.connected))
+      if (!s.connected) setShowSetup('connect')
+    } catch {
+      setValidated(false)
+    } finally {
+      setChecking(false)
+    }
+  }
+  onMount(async () => {
+    validateAndDetect()
+    try {
+      const r = await fetch(`${SERVER_BASE}/api/orgs`).then((x) => x.json())
+      const names = (r.orgs || []).map((o: any) => o.name)
+      setOrgs(names)
+      if (!org() && names.length > 0) setOrg(names[0])
+    } catch {}
+  })
+
+  // Optional: could fetch org-specific status here; do not auto-open setup wizard
+
   // Global chat stream
   function askGlobalLLM() {
     const text = chatInput().trim()
@@ -252,10 +271,23 @@ export default function App() {
       }
       loadState()
     })
-    es.addEventListener('ensure', (e) => {
-      setChatLog((prev) => [...prev, `[system] ensure: ${(e as MessageEvent).data}`])
-      setTimeout(loadState, 1500)
+    es.addEventListener('agent', (e) => {
+      try {
+        const info = JSON.parse((e as MessageEvent).data)
+        if (info && info.ok) {
+          setChatLog((prev) => [...prev, `[system] agent deploy started`])
+        } else {
+          const err = info?.error || 'unknown error'
+          setChatLog((prev) => [
+            ...prev,
+            `[error] agent deploy failed: ${err}` + (info?.output ? `\n${info.output}` : ''),
+          ])
+        }
+      } catch {
+        setChatLog((prev) => [...prev, `[error] agent deploy failed: ${(e as MessageEvent).data}`])
+      }
     })
+
     es.addEventListener('done', () => es.close())
     es.addEventListener('error', () => es.close())
     setTimeout(loadState, 1500)
@@ -341,14 +373,19 @@ export default function App() {
     <div class="w-full h-screen flex flex-col">
       {/* Top navigation */}
       <header class="border-b p-3 flex items-center gap-2 bg-white dark:bg-slate-900 dark:border-slate-700">
-        <div class="font-semibold mr-4">Org:</div>
-        <input
-          class="border p-2 rounded bg-white dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
-          placeholder="org (e.g., acme)"
+        <OrgSelect
+          orgs={orgs()}
           value={org()}
-          onInput={(e) => setOrg(e.currentTarget.value)}
+          onChange={(o) => setOrg(o)}
+          onCreateNew={() => setShowOrgWizard(true)}
         />
         <nav class="ml-auto flex gap-2">
+          <button
+            class={`px-4 py-2 rounded border dark:border-slate-700 bg-white dark:bg-slate-800 dark:text-slate-100`}
+            onClick={() => setShowOrgManager(true)}
+          >
+            Orgs
+          </button>
           <For each={tabs}>
             {(t) => (
               <button
@@ -391,6 +428,67 @@ export default function App() {
           height: 'calc(100vh - 60px)',
         }}
       >
+        {/* Setup gate overlays */}
+        <Show when={!validated() || showOrgWizard() || showSetup() !== 'none' || showOrgManager()}>
+          <div class="absolute inset-0 z-20 bg-white/70 dark:bg-black/60 backdrop-blur-sm flex items-start justify-center p-6 overflow-auto">
+            <div class="bg-white dark:bg-slate-900 rounded shadow-xl w-full max-w-4xl">
+              <Show when={showOrgWizard()}>
+                <OrgWizard
+                  onCreate={async (name) => {
+                    setShowOrgWizard(false)
+                    try {
+                      const r = await fetch(`${SERVER_BASE}/api/orgs`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'X-Auth-Token': dashboardToken,
+                        },
+                        body: JSON.stringify({ name }),
+                      }).then((x) => x.json())
+                      if (r.ok) {
+                        const names = [...orgs(), name]
+                        setOrgs(names)
+                        setOrg(name)
+                      }
+                    } catch {}
+                  }}
+                  onCancel={() => setShowOrgWizard(false)}
+                />
+              </Show>
+              <Show when={checking()}>
+                <div class="p-6 text-center">
+                  <div class="text-lg font-semibold mb-1">Checking network status…</div>
+                  <div class="text-sm opacity-70">
+                    One moment while we detect your Tailscale connection.
+                  </div>
+                </div>
+              </Show>
+              <Show when={!showOrgWizard() && showOrgManager()}>
+                <div class="p-2 flex justify-end">
+                  <button class="px-3 py-2 border rounded" onClick={() => setShowOrgManager(false)}>
+                    Close
+                  </button>
+                </div>
+                <OrgManager serverBase={SERVER_BASE} dashboardToken={dashboardToken} />
+              </Show>
+              <Show when={!showOrgWizard() && !checking() && showSetup() !== 'none'}>
+                <SetupWizard
+                  mode={showSetup() === 'create' ? 'create' : 'connect'}
+                  serverBase={SERVER_BASE}
+                  dashboardToken={dashboardToken}
+                  onDone={(ok) => {
+                    if (ok) {
+                      setValidated(true)
+                      setShowSetup('none')
+                      loadState()
+                    }
+                  }}
+                />
+              </Show>
+            </div>
+          </div>
+        </Show>
+
         {/* Center area by tab */}
         <main class="overflow-auto p-3">
           <Show when={activeTab() === 'Agents'}>
@@ -556,12 +654,6 @@ export default function App() {
             <div class="mt-3 text-xs">
               <div class="font-semibold mb-1">Debug</div>
               <div class="flex gap-2 mb-2">
-                <button
-                  class="px-2 py-1 border rounded dark:border-slate-700"
-                  onClick={manualEnsure}
-                >
-                  Ensure Agent
-                </button>
                 <button
                   class="px-2 py-1 border rounded dark:border-slate-700"
                   onClick={() => {

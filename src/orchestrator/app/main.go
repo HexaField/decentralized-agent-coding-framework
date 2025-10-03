@@ -7,6 +7,7 @@ import (
 
 func main() {
     mux := http.NewServeMux()
+    // prefer consolidated handlers in this package
     registerHandlers(mux)
     addr := ":8080"
     log.Printf("orchestrator starting on %s", addr)
