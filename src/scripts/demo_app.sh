@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [ -f .env ] && set -a && . ./.env && set +a
-. "$(dirname "$0")/org_helpers.sh"
 
 ORG="${1:-}"
 [ -n "$ORG" ] || { echo "Usage: $0 <org>"; exit 1; }
 
 export KUBECONFIG="${HOME}/.kube/${ORG}.config"
-NS_PREFIX="$(ns_prefix "$ORG")"
+NS_PREFIX="${NAMESPACE_PREFIX:-org}"
 NS="${NS_PREFIX}-${ORG}"
 
 kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -

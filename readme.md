@@ -63,7 +63,7 @@ rm -f ./state/dashboard.db
 	- Stub loop, code‑server runtime, basic probes and logs
 - Talos + Headscale path
 	- Scripts for external Headscale bootstrap, Talos org bootstrap, Tailscale Operator install, and a demo app
-	- Dynamic orgs via `orgs.yaml` with yq helpers
+	- Dynamic orgs are created and managed via the dashboard; no orgs.yaml needed
 - Security defaults
 	- Local/tailnet binding and tokens for mutations by default
 - CI

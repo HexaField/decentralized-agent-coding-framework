@@ -37,9 +37,6 @@ if [ "$MISSING" -ne 0 ]; then
   exit 1
 fi
 
-if [ -z "${ORG_CONFIG_FILE:-}" ] && [ -z "${ORGS:-}" ]; then
-  echo "Define ORG_CONFIG_FILE or ORGS." >&2
-  exit 1
-fi
+echo "Org configuration is managed by the dashboard; skipping orgs.yaml checks."
 
 echo "Preflight OK"

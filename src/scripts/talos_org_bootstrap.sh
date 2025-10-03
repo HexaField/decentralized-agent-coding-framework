@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 [ -f .env ] && set -a && . ./.env && set +a
-. "$(dirname "$0")/org_helpers.sh"
 
 ORG="${1:-}"
 [ -n "$ORG" ] || { echo "Usage: $0 <org>"; exit 1; }
 
-for cmd in talosctl kubectl yq; do command -v "$cmd" >/dev/null 2>&1 || { echo "Missing $cmd"; exit 1; }; done
+for cmd in talosctl kubectl; do command -v "$cmd" >/dev/null 2>&1 || { echo "Missing $cmd"; exit 1; }; done
 
-NS_PREFIX="$(ns_prefix "$ORG")"
+# Namespace prefix is now fixed to "org" unless overridden by env
+NS_PREFIX="${NAMESPACE_PREFIX:-org}"
 NS="${NS_PREFIX}-${ORG}"
 
-if [ -n "${ORG_CONFIG_FILE:-}" ] && [ -f "${ORG_CONFIG_FILE}" ]; then
-  CP_NODES=$(org_field "$ORG" '.talos.cpNodes[]?' | xargs || true)
-  WORKER_NODES=$(org_field "$ORG" '.talos.workerNodes[]?' | xargs || true)
-else
-  UORG=$(echo "$ORG" | tr '[:lower:]' '[:upper:]')
-  CP_NODES_VAR="${UORG}_CP_NODES"
-  WORKER_NODES_VAR="${UORG}_WORKER_NODES"
-  CP_NODES=${!CP_NODES_VAR:-}
-  WORKER_NODES=${!WORKER_NODES_VAR:-}
-fi
+# Expect node IP lists from environment or dashboard-supplied context
+UORG=$(echo "$ORG" | tr '[:lower:]' '[:upper:]')
+CP_NODES_VAR="${UORG}_CP_NODES"
+WORKER_NODES_VAR="${UORG}_WORKER_NODES"
+CP_NODES=${!CP_NODES_VAR:-}
+WORKER_NODES=${!WORKER_NODES_VAR:-}
 
 [ -n "${CP_NODES:-}" ] || { echo "No control-plane nodes for $ORG"; exit 1; }
 CP1_IP=$(echo "$CP_NODES" | awk '{print $1}')
