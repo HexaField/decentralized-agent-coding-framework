@@ -1,0 +1,52 @@
+name: Integration (Orchestrator + Dashboard)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build orchestrator image
+        uses: docker/build-push-action@v6
+        with:
+          context: src
+          file: src/docker/orchestrator.Dockerfile
+          push: false
+          tags: mvp-orchestrator:ci
+      - name: Start orchestrator + dashboard (compose)
+        working-directory: src/compose
+        run: |
+          docker compose -f docker-compose.orchestrator.yml up -d --build
+          # Wait for health endpoints
+          for i in {1..60}; do
+            curl -fsS http://127.0.0.1:18080/health && break || sleep 2
+          done
+          # Dashboard uses HTTPS with self-signed certs
+          for i in {1..60}; do
+            curl -kfsS https://127.0.0.1:8090/api/health && break || sleep 2
+          done
+      - name: Install dashboard deps
+        working-directory: src/dashboard
+        run: npm ci
+      - name: Run integration tests
+        working-directory: src/dashboard
+        env:
+          DASHBOARD_URL: https://127.0.0.1:8090
+          NODE_TLS_REJECT_UNAUTHORIZED: '0'
+        run: npx vitest run --include "server/**/*.itest.*"
+      - name: Logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          docker logs mvp-orchestrator || true
+      - name: Teardown
+        if: always()
+        working-directory: src/compose
+        run: docker compose -f docker-compose.orchestrator.yml down -v
