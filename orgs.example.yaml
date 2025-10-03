@@ -6,7 +6,7 @@ orgs:
       cpNodes: [100.64.0.10]
       workerNodes: []
   - name: devrel
-  clusterMode: talos
+    clusterMode: talos
     namespacePrefix: org
     talos:
       cpNodes: [100.64.1.10]

@@ -23,17 +23,24 @@ mkdir -p "${CONF_DIR}"
 cat > "${CONF_DIR}/config.yaml" <<YAML
 server_url: ${HEADSCALE_URL}
 listen_addr: 0.0.0.0:8080
-db_type: sqlite3
-db_path: /var/lib/headscale/db.sqlite
-ip_prefixes:
-  - 100.64.0.0/10
+metrics_listen_addr: 127.0.0.1:9090
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
 derp:
   server:
     enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
 noise:
   private_key_path: /var/lib/headscale/noise_private.key
 dns:
   override_local_dns: false
+  magic_dns: false
 YAML
 
 docker run -d --name headscale-local \

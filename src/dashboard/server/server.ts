@@ -539,6 +539,11 @@ app.get('/api/setup/stream', async (req, res) => {
   const flow = String(req.query.flow || 'connect') // 'create' | 'connect'
   const mode = String(req.query.mode || 'auto') // 'external' | 'local' | 'auto'
   const orgParam = String(req.query.org || '') // optional single org; default uses helpers
+  // Optional config overrides from the UI
+  const HS_URL = String((req.query as any).HEADSCALE_URL || '')
+  const HS_SSH = String((req.query as any).HEADSCALE_SSH || '')
+  const TS_KEY = String((req.query as any).TS_AUTHKEY || '')
+  const TS_HOST = String((req.query as any).TS_HOSTNAME || '')
 
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -554,7 +559,12 @@ app.get('/api/setup/stream', async (req, res) => {
   const runStep = (title: string, file: string, args: string[] = []) =>
     new Promise<void>((resolve, reject) => {
       send('step', { title, file, args })
-      const proc = spawn('bash', [file, ...args], { cwd: srcDir, env: process.env })
+      const childEnv: NodeJS.ProcessEnv = { ...process.env }
+      if (HS_URL) childEnv.HEADSCALE_URL = HS_URL
+      if (HS_SSH) childEnv.HEADSCALE_SSH = HS_SSH
+      if (TS_KEY) childEnv.TS_AUTHKEY = TS_KEY
+      if (TS_HOST) childEnv.TS_HOSTNAME = TS_HOST
+      const proc = spawn('bash', [file, ...args], { cwd: srcDir, env: childEnv })
       proc.stdout.on('data', (d) => send('log', String(d)))
       proc.stderr.on('data', (d) => send('log', String(d)))
       proc.on('close', (code) => {
@@ -571,7 +581,7 @@ app.get('/api/setup/stream', async (req, res) => {
   try {
     send('begin', { flow, mode, org: orgParam || undefined })
 
-    const hsExternal = process.env.HEADSCALE_SSH && process.env.HEADSCALE_SSH.length > 0
+  const hsExternal = Boolean((HS_SSH || process.env.HEADSCALE_SSH || '').length)
     const effectiveMode = mode === 'auto' ? (hsExternal ? 'external' : 'local') : mode
 
     if (flow === 'create') {
@@ -661,10 +671,14 @@ app.post('/api/setup/validate', (req, res) => {
   }
   need(process.env.DASHBOARD_TOKEN, 'DASHBOARD_TOKEN not set')
   need(process.env.ORCHESTRATOR_TOKEN, 'ORCHESTRATOR_TOKEN not set')
-  // Tailscale/Headscale
-  need(process.env.HEADSCALE_URL, 'HEADSCALE_URL not set')
-  need(process.env.TS_AUTHKEY, 'TS_AUTHKEY not set (or expired)')
-  need(process.env.TS_HOSTNAME, 'TS_HOSTNAME not set')
+  // Tailscale/Headscale (allow UI overrides)
+  const body = (typeof req.body === 'object' && req.body) || {}
+  const hsUrl = body.HEADSCALE_URL || process.env.HEADSCALE_URL
+  const tsKey = body.TS_AUTHKEY || process.env.TS_AUTHKEY
+  const tsHost = body.TS_HOSTNAME || process.env.TS_HOSTNAME
+  need(hsUrl, 'HEADSCALE_URL not set')
+  need(tsKey, 'TS_AUTHKEY not set (or expired)')
+  need(tsHost, 'TS_HOSTNAME not set')
   // Operator creds (either OAuth or auth key)
   if (!process.env.TS_OPERATOR_AUTHKEY) {
     need(

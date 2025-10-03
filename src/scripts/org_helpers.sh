@@ -4,6 +4,20 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "${ROOT_DIR}/.env" ] && set -a && . "${ROOT_DIR}/.env" && set +a
 
+# Auto-detect orgs config file if not provided
+if [ -z "${ORG_CONFIG_FILE:-}" ]; then
+  for candidate in \
+    "${ROOT_DIR}/../orgs.yaml" \
+    "${ROOT_DIR}/../orgs.example.yaml" \
+    "${ROOT_DIR}/orgs.yaml" \
+    "${ROOT_DIR}/orgs.example.yaml"; do
+    if [ -f "$candidate" ]; then
+      export ORG_CONFIG_FILE="$candidate"
+      break
+    fi
+  done
+fi
+
 orgs_list() {
   if [ -n "${ORG_CONFIG_FILE:-}" ] && [ -f "${ORG_CONFIG_FILE}" ]; then
     if command -v yq >/dev/null 2>&1; then

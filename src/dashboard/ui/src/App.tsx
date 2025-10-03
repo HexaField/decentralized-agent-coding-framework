@@ -14,8 +14,6 @@ const SERVER_BASE = (() => {
   return `${l.protocol}//${l.host}`
 })()
 
-console.log(import.meta.env)
-
 // Dev debug stream
 const isDev = true //Boolean((import.meta as any)?.env?.DEV)
 
