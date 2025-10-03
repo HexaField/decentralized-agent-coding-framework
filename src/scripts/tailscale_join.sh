@@ -1,30 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolve repo/src roots so this script works from any CWD
+# Resolve script dir for optional helpers
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)" # points to src/
-REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
-
-# Load env from src/.env (preferred) or repo/.env
-if [[ -f "${ROOT_DIR}/.env" ]]; then
-  ( set -o allexport; source "${ROOT_DIR}/.env"; set +o allexport )
-elif [[ -f "${REPO_ROOT}/.env" ]]; then
-  ( set -o allexport; source "${REPO_ROOT}/.env"; set +o allexport )
-elif [[ -f ./.env ]]; then
-  ( set -o allexport; source ./.env; set +o allexport )
-fi
 
 # Validate required vars
 if [[ -z "${HEADSCALE_URL:-}" || -z "${TS_AUTHKEY:-}" || -z "${TS_HOSTNAME:-}" ]]; then
-  echo "HEADSCALE_URL, TS_AUTHKEY, TS_HOSTNAME must be set (see src/.env.example)." >&2
-  echo "Hint: cp src/.env.example src/.env and edit with your Headscale URL and auth key." >&2
+  echo "HEADSCALE_URL, TS_AUTHKEY, TS_HOSTNAME must be provided by the dashboard server." >&2
+  echo "This script no longer reads .env files; launch it via the dashboard setup flow." >&2
   exit 1
 fi
 
 # Guard against placeholder/example values
 if [[ "${HEADSCALE_URL}" == *example.com* ]] || [[ "${TS_AUTHKEY}" == tskey-abc* ]]; then
-  echo "Refusing to join with placeholder values. Please edit src/.env with real HEADSCALE_URL and TS_AUTHKEY." >&2
+  echo "Refusing to join with placeholder/example values. Provide real HEADSCALE_URL and TS_AUTHKEY from the dashboard." >&2
   exit 1
 fi
 

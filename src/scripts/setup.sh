@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-[ -f "${ROOT_DIR}/.env" ] && (cd "${ROOT_DIR}" && set -a && . ./.env && set +a)
 
 MODE="${1:-auto}"  # auto|external|local
 
@@ -24,18 +22,11 @@ case "$MODE" in
   local)
     "${SCRIPT_DIR}/hs_bootstrap_local.sh" ;;
   auto)
-    if [ -n "${HEADSCALE_SSH:-}" ]; then "${SCRIPT_DIR}/hs_bootstrap_external.sh"; else "${SCRIPT_DIR}/hs_bootstrap_local.sh"; fi ;;
+    "${SCRIPT_DIR}/hs_bootstrap_local.sh" ;;
 esac
 
 # Attempt to join the tailnet on this host if variables are provided
-if [[ -n "${HEADSCALE_URL:-}" && -n "${TS_AUTHKEY:-}" && -n "${TS_HOSTNAME:-}" ]]; then
-  echo "Attempting to join Tailscale (Headscale) on this host..."
-  if ! "${SCRIPT_DIR}/tailscale_join.sh"; then
-    echo "Warning: tailscale_join failed; continuing setup. You can re-run src/scripts/tailscale_join.sh later." >&2
-  fi
-else
-  echo "Skipping tailscale_join: HEADSCALE_URL/TS_AUTHKEY/TS_HOSTNAME not set in env." >&2
-fi
+echo "Skipping tailscale_join: configuration is driven by the dashboard setup flow."
 
 "${SCRIPT_DIR}/start_orchestrator.sh" up || true
 

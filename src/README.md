@@ -4,29 +4,30 @@ This MVP runs a local orchestrator and agent pods across a Headscale/Tailscale m
 
 ## Prerequisites
 
-- Headscale server reachable; you have HEADSCALE_URL and a reusable TS_AUTHKEY
+- Docker Desktop or Docker Engine + docker-compose
+- k3d, kubectl (install script provided)
+- Optional: an external Headscale if you prefer external mode; otherwise the dashboard can bootstrap a local Headscale for dev.
 - Docker Desktop or Docker Engine + docker-compose
 - k3d, kubectl (install script provided)
 
 ## Quick Start (single device)
 
-1. Copy env and set values:
-   cp .env.example .env
-2. Install prerequisites:
+1. Install prerequisites:
    ./scripts/install_prereqs.sh
-3. Join Tailscale via Headscale:
-   ./scripts/tailscale_join.sh
-4. Create an org cluster:
-   ./scripts/create_org_cluster.sh acme
-5. Start orchestrator + dashboard:
+2. Start orchestrator + dashboard:
    ./scripts/start_orchestrator.sh
    - Orchestrator: http://127.0.0.1:18080/health
-   - Dashboard: http://127.0.0.1:8090/ui
-6. Seed demo project:
+   - Dashboard: https://127.0.0.1:8090/ui (accept self-signed cert)
+3. In the Dashboard UI, use “Connect this device”:
+   - Join existing network: enter Headscale URL, Auth Key, and hostname.
+   - Create new network: choose local (auto Headscale bootstrap) or external (SSH), provide hostname (and SSH if external). No .env is used.
+4. Create an org cluster:
+   ./scripts/create_org_cluster.sh acme
+5. Seed demo project:
    ./scripts/seed_demo_project.sh
-7. Deploy an agent:
+6. Deploy an agent:
    ./scripts/deploy_agent.sh acme "Hello world web task"
-8. Open code‑server for the agent:
+7. Open code‑server for the agent:
    ./scripts/open_code_server.sh acme <agent-name>
    Then browse http://127.0.0.1:8443 and use the password from CODE_SERVER_PASSWORD (default: password).
 

@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-[ -f "${ROOT_DIR}/.env" ] && set -a && . "${ROOT_DIR}/.env" && set +a
 . "$(dirname "$0")/org_helpers.sh"
 
-: "${HEADSCALE_URL:?HEADSCALE_URL required}"
-: "${HEADSCALE_SSH:?HEADSCALE_SSH required (e.g., admin@host)}"
+: "${HEADSCALE_URL:?HEADSCALE_URL required (provided by dashboard)}"
+: "${HEADSCALE_SSH:?HEADSCALE_SSH required (e.g., admin@host; provided by dashboard)}"
 
 curl -sSfL "${HEADSCALE_URL}/health" >/dev/null || { echo "Headscale not reachable at ${HEADSCALE_URL}"; exit 1; }
 ssh -o StrictHostKeyChecking=accept-new "${HEADSCALE_SSH}" "headscale version" || { echo "SSH to headscale host failed"; exit 1; }

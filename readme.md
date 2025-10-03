@@ -26,32 +26,22 @@ npm install
 npm run dev
 ```
 
-Headscale + Talos (external Headscale)
-1) Copy and edit environment/config
+Headscale + Talos (via Dashboard)
+1) Start orchestrator and dashboard (if not already)
 ```bash
-cp .env.example .env
-cp docs/orgs.example.yaml orgs.yaml
-# Set HEADSCALE_URL and HEADSCALE_SSH in .env, and edit node IPs in orgs.yaml
+bash src/scripts/start_orchestrator.sh up
 ```
-2) Run the unified setup
-```bash
-bash src/scripts/setup.sh external
-```
-This performs preflight checks, bootstraps Headscale namespaces and keys, sets up org clusters, installs the Tailscale Operator, and deploys a small demo app.
+2) Open the dashboard and use “Connect this device”
+- Join existing network: enter Headscale URL, TS Auth Key, and a hostname for this machine.
+- Create new network (Local): choose Local, provide a hostname; the dashboard will bootstrap a local Headscale and generate a TS auth key for you.
+- Create new network (External): choose External, enter Headscale URL and an admin SSH (e.g., admin@host); the dashboard will create namespaces/keys on the remote Headscale.
 
-3) Run dashboard and orchestrator on the tailnet
-- Ensure this machine is joined to your Headscale/Tailscale network (one-time per host):
-	```bash
-	bash src/scripts/tailscale_join.sh
-	```
-- Start the services (both run on this host and are reachable to other tailnet devices):
-	```bash
-	bash src/scripts/start_orchestrator.sh up
-	```
-- Access over Tailscale from any device on the same tailnet:
-	- Dashboard: https://<your-tailnet-IP-or-MagicDNS-name>:8090
-	- Orchestrator health: http://<your-tailnet-IP-or-MagicDNS-name>:18080/health
-	Note: tokens from your `.env` (DASHBOARD_TOKEN, ORCHESTRATOR_TOKEN) gate mutating actions.
+The Create flow performs preflight checks and can bootstrap org clusters, install the Tailscale Operator, and deploy a small demo app.
+
+3) Access over Tailscale from any device on the same tailnet
+- Dashboard: https://<your-tailnet-IP-or-MagicDNS-name>:8090
+- Orchestrator health: http://<your-tailnet-IP-or-MagicDNS-name>:18080/health
+Note: tokens from your `.env` (DASHBOARD_TOKEN, ORCHESTRATOR_TOKEN) gate mutating actions.
 
 ## Cleanup
 

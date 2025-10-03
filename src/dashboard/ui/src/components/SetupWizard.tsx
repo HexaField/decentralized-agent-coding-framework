@@ -125,7 +125,7 @@ export default function SetupWizard(props: Props): JSX.Element {
         <Show when={tab() === 'join'}>Required: Headscale URL, TS Auth Key, TS Hostname.</Show>
         <Show when={tab() === 'create'}>
           Required: TS Hostname and one of: Headscale URL (external), Headscale SSH (external
-          bootstrap), or TS Auth Key (join after local bootstrap).
+          bootstrap), or TS Auth Key (join after local bootstrap). No .env files are used here.
         </Show>
       </div>
       <div class="grid gap-3 grid-cols-1 md:grid-cols-2 mb-3">

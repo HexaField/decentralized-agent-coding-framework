@@ -704,20 +704,19 @@ app.get('/api/setup/stream', async (req, res) => {
   try {
     send('begin', { flow, mode, org: orgParam || undefined })
 
-    const hsExternal = Boolean((HS_SSH || process.env.HEADSCALE_SSH || '').length)
+    const hsExternal = Boolean(HS_SSH.length)
     const effectiveMode = mode === 'auto' ? (hsExternal ? 'external' : 'local') : mode
 
     // Early input validation per flow to avoid long-running failures
     const missing: string[] = []
     if (flow === 'connect') {
-      if (!HS_URL && !process.env.HEADSCALE_URL) missing.push('HEADSCALE_URL')
-      if (!TS_KEY && !process.env.TS_AUTHKEY) missing.push('TS_AUTHKEY')
-      if (!TS_HOST && !process.env.TS_HOSTNAME) missing.push('TS_HOSTNAME')
+      if (!HS_URL) missing.push('HEADSCALE_URL')
+      if (!TS_KEY) missing.push('TS_AUTHKEY')
+      if (!TS_HOST) missing.push('TS_HOSTNAME')
     } else if (flow === 'create') {
       // For local create, we'll bootstrap Headscale ourselves and can generate a preauth key
-      if (effectiveMode === 'external' && !HS_URL && !process.env.HEADSCALE_URL)
-        missing.push('HEADSCALE_URL')
-      if (!TS_HOST && !process.env.TS_HOSTNAME) missing.push('TS_HOSTNAME')
+      if (effectiveMode === 'external' && !HS_URL) missing.push('HEADSCALE_URL')
+      if (!TS_HOST) missing.push('TS_HOSTNAME')
     }
     if (missing.length) {
       send('error', `Missing required inputs for ${flow}: ${missing.join(', ')}`)
@@ -732,7 +731,7 @@ app.get('/api/setup/stream', async (req, res) => {
       else await runStep('Headscale bootstrap (local)', resolveScript('hs_bootstrap_local.sh'))
 
       // Determine effective Headscale URL (for local, read generated config)
-      let effectiveHsUrl = HS_URL || process.env.HEADSCALE_URL || ''
+      let effectiveHsUrl = HS_URL || ''
       if (!effectiveHsUrl && effectiveMode === 'local') {
         try {
           const cfgPath = path.join(srcDir, '_tmp', 'headscale', 'config.yaml')
@@ -744,7 +743,7 @@ app.get('/api/setup/stream', async (req, res) => {
       if (!effectiveHsUrl) send('warn', 'HEADSCALE_URL not found; tailscale join may fail')
 
       // If no TS auth key provided and using local mode, generate one via the headscale container
-      let joinKey = TS_KEY || process.env.TS_AUTHKEY || ''
+      let joinKey = TS_KEY || ''
       if (!joinKey && effectiveMode === 'local') {
         send('step', 'Generating Headscale preauth key (local)')
         const runDocker = async (args: string[]) =>
@@ -888,13 +887,17 @@ app.post('/api/setup/validate', (req, res) => {
   }
   // Non-critical env hints
   add(process.env.DASHBOARD_TOKEN, 'DASHBOARD_TOKEN not set (using default)', false)
-  add(process.env.ORCHESTRATOR_TOKEN, 'ORCHESTRATOR_TOKEN not set (some features may be limited)', false)
+  add(
+    process.env.ORCHESTRATOR_TOKEN,
+    'ORCHESTRATOR_TOKEN not set (some features may be limited)',
+    false
+  )
   // Tailscale/Headscale (allow UI overrides)
   const body = (typeof req.body === 'object' && req.body) || {}
   const flow: 'create' | 'connect' = body.flow === 'create' ? 'create' : 'connect'
-  const hsUrl = body.HEADSCALE_URL || process.env.HEADSCALE_URL
-  const tsKey = body.TS_AUTHKEY || process.env.TS_AUTHKEY
-  const tsHost = body.TS_HOSTNAME || process.env.TS_HOSTNAME
+  const hsUrl = body.HEADSCALE_URL || ''
+  const tsKey = body.TS_AUTHKEY || ''
+  const tsHost = body.TS_HOSTNAME || ''
   // For connect, require HS URL + TS key + hostname
   if (flow === 'connect') {
     add(hsUrl, 'HEADSCALE_URL not set', true)
@@ -904,14 +907,7 @@ app.post('/api/setup/validate', (req, res) => {
     // For create (local): only hostname is required; HS_URL and keys can be derived/generated
     add(tsHost, 'TS_HOSTNAME not set', true)
   }
-  // Operator creds (either OAuth or auth key) – non-critical for setup flows
-  if (!process.env.TS_OPERATOR_AUTHKEY) {
-    add(
-      process.env.TS_OAUTH_CLIENT_ID && process.env.TS_OAUTH_CLIENT_SECRET,
-      'Operator: set TS_OPERATOR_AUTHKEY or TS_OAUTH_CLIENT_ID/TS_OAUTH_CLIENT_SECRET',
-      false
-    )
-  }
+  // Operator creds are configured elsewhere; not blocking setup here.
   res.json({ ok: critical.length === 0, issues: [...critical, ...issues] })
 })
 

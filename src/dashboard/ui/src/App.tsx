@@ -16,7 +16,7 @@ const SERVER_BASE = (() => {
 })()
 
 // Dev debug stream
-const isDev = true //Boolean((import.meta as any)?.env?.DEV)
+const isDev = Boolean((import.meta as any)?.env?.DEV)
 
 // Types
 type Task = { id: string; status: string; text?: string }
