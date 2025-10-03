@@ -66,37 +66,36 @@ describe('Dashboard chat schedules task and shows agent [integration]', () => {
     if (orchServer) await new Promise((r) => orchServer!.close(() => r(null as any)))
   })
 
-  it(
-    'accepts chat and state shows at least one agent',
-    async () => {
-      const org = process.env.ORG || 'acme'
-      const r = await fetch(`${base}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': process.env.DASHBOARD_TOKEN || 'dashboard-secret' },
-        body: JSON.stringify({ org, text: 'please start an agent' }),
-      })
-      expect(r.status).toBe(200)
-      const body = await r.json()
-      expect(body && body.ok).toBe(true)
+  it('accepts chat and state shows at least one agent', async () => {
+    const org = process.env.ORG || 'acme'
+    const r = await fetch(`${base}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Auth-Token': process.env.DASHBOARD_TOKEN || 'dashboard-secret',
+      },
+      body: JSON.stringify({ org, text: 'please start an agent' }),
+    })
+    expect(r.status).toBe(200)
+    const body = await r.json()
+    expect(body && body.ok).toBe(true)
 
-      // Poll /api/state for an agent to appear (orchestrator stub provides one)
-      const deadline = Date.now() + 20_000
-      let seen = false
-      while (Date.now() < deadline && !seen) {
-        const s = await fetch(`${base}/api/state`)
-        expect(s.status).toBe(200)
-        const sb = await s.json()
-        const agents = Array.isArray(sb.agents) ? sb.agents : []
-        if (agents.length > 0) {
-          seen = true
-          break
-        }
-        await new Promise((r) => setTimeout(r, 500))
+    // Poll /api/state for an agent to appear (orchestrator stub provides one)
+    const deadline = Date.now() + 20_000
+    let seen = false
+    while (Date.now() < deadline && !seen) {
+      const s = await fetch(`${base}/api/state`)
+      expect(s.status).toBe(200)
+      const sb = await s.json()
+      const agents = Array.isArray(sb.agents) ? sb.agents : []
+      if (agents.length > 0) {
+        seen = true
+        break
       }
-      expect(seen).toBe(true)
-    },
-    60_000
-  )
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    expect(seen).toBe(true)
+  }, 60_000)
 })
 
 // For manual dev, you can still ping: curl -sS -X POST http://127.0.0.1:8090/api/chat -H 'Content-Type: application/json' -d '{"org":"acme","text":"test"}' | jq -C .

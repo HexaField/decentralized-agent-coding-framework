@@ -442,15 +442,7 @@ func registerHandlers(mux *http.ServeMux) {
         agentLogsMu.RLock(); lines := append([]string(nil), agentLogs[name]...); agentLogsMu.RUnlock()
         writeJSON(w, map[string]any{"name": name, "lines": lines})
     })
-    // Dev ensure endpoint: deprecated; instruct Talos flow
-    mux.HandleFunc("/agents/ensure", requireToken(func(w http.ResponseWriter, r *http.Request) {
-        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
-        w.WriteHeader(http.StatusGone)
-        writeJSON(w, map[string]any{
-            "ok": false,
-            "error": "deprecated: deploy via KUBECONFIG=~/.kube/{org}.config kubectl apply -f manifests",
-        })
-    }, "ORCHESTRATOR_TOKEN"))
+    
     // SSE: agent logs
     mux.HandleFunc("/events/agents", func(w http.ResponseWriter, r *http.Request) {
         name := r.URL.Query().Get("name")

@@ -5,7 +5,7 @@ import fs from 'fs'
 import http from 'http'
 import https from 'https'
 import httpProxy from 'http-proxy'
-import { execFile, spawn } from 'child_process'
+import { spawn } from 'child_process'
 import sqlite3 from 'sqlite3'
 import { open, Database } from 'sqlite'
 
@@ -18,7 +18,6 @@ const ORCH_URL =
   process.env.ORCHESTRATOR_URL ||
   (process.env.UI_DEV === '1' ? 'http://127.0.0.1:18080' : 'http://mvp-orchestrator:8080')
 const ORCH_TOKEN = process.env.ORCHESTRATOR_TOKEN || process.env.DASHBOARD_TOKEN || ''
-const LOCAL_ENSURE = process.env.LOCAL_ENSURE === '1'
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true })
 // Optional auth header for agent fallback HTTP server; harmless for code-server
 const CS_AUTH_HEADER = process.env.CODE_SERVER_AUTH_HEADER || 'X-Agent-Auth'
@@ -444,9 +443,7 @@ app.use((req, res, next) => {
   if (!safe) {
     if (
       process.env.NODE_ENV !== 'production' &&
-      (req.path.startsWith('/api/debug') ||
-        req.path.startsWith('/api/ensure') ||
-        req.path.startsWith('/api/editor'))
+      (req.path.startsWith('/api/debug') || req.path.startsWith('/api/editor'))
     ) {
       return next()
     }
@@ -478,33 +475,6 @@ app.get('/api/state', async (req, res) => {
 app.post('/api/command', (req, res) => {
   const q = (req.body && req.body.q) || ''
   res.json({ ok: true, echo: q })
-})
-
-// Ensure helper: local (dev) or orchestrator-backed
-async function ensureAgent(org: string, prompt: string) {
-  if (LOCAL_ENSURE) {
-    const deploy = path.resolve(here, '..', '..', 'scripts', 'deploy_agent.sh')
-    return new Promise((resolve, reject) => {
-      execFile('bash', [deploy, org, prompt], { env: process.env }, (err, stdout, stderr) => {
-        if (err) return reject(new Error((stdout || '') + (stderr || '') || String(err)))
-        resolve({ ok: true, output: String(stdout), mode: 'local' })
-      })
-    })
-  }
-  const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-  return fetchJSON(`${ORCH_URL}/agents/ensure`, { method: 'POST', headers, body: { org, prompt } })
-}
-
-// Public API for ensure (POST requires dashboard token header)
-app.post('/api/ensure', async (req, res) => {
-  try {
-    const org = (req.body && req.body.org) || 'acme'
-    const prompt = (req.body && req.body.prompt) || ''
-    const out = await ensureAgent(org, prompt)
-    res.json({ ok: true, ensure: out })
-  } catch (e) {
-    res.status(502).json({ ok: false, error: String(e) })
-  }
 })
 
 // Editor control: proxy to orchestrator endpoints
@@ -552,7 +522,6 @@ app.post('/api/chat', async (req, res) => {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
     const body = { org, task: text }
     const out = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
-    await ensureAgent(org, text).catch(() => ({}))
     chats.global.push({ role: 'system', text: `scheduled task ${out.id || ''}` })
     res.json({ ok: true, task: out })
   } catch (e) {
@@ -703,19 +672,7 @@ app.get('/api/chat/stream', async (req, res) => {
     const body = { org, task: text }
     const task = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
     send('task', JSON.stringify(task))
-    // best-effort ensure agent, include details in stream
-    try {
-      const ensure = await fetchJSON(`${ORCH_URL}/agents/ensure`, {
-        method: 'POST',
-        headers,
-        body: { org, prompt: text },
-      })
-      send('ensure', JSON.stringify(ensure))
-      send('message', 'Task scheduled and ensure invoked.')
-    } catch (ee) {
-      send('ensure', JSON.stringify({ error: String(ee) }))
-      send('message', 'Task scheduled; ensure failed (see debug).')
-    }
+    send('message', 'Task scheduled.')
   } catch (e) {
     send('message', `Error: ${String(e)}`)
   }
@@ -746,7 +703,6 @@ app.get('/api/debug/stream', async (req, res) => {
       orchTokenSet: Boolean(ORCH_TOKEN),
       uiDev: UI_DEV,
       corsOrigins: ALLOW_ORIGINS,
-      ensureMode: LOCAL_ENSURE ? 'local' : 'orchestrator',
     })
     send('status', { message: 'connected' })
     send('health', health)
@@ -771,18 +727,6 @@ app.get('/api/debug/stream', async (req, res) => {
     }
   }, 5000)
   req.on('close', () => clearInterval(iv))
-})
-
-// Debug: explicit ensure endpoint for troubleshooting
-app.post('/api/debug/ensure', async (req, res) => {
-  try {
-    const org = (req.body && req.body.org) || 'acme'
-    const prompt = (req.body && req.body.prompt) || ''
-    const ensure = await ensureAgent(org, prompt)
-    res.json({ ok: true, ensure })
-  } catch (e) {
-    res.status(502).json({ ok: false, error: String(e) })
-  }
 })
 
 // One-shot debug status

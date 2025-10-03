@@ -129,23 +129,6 @@ export default function App() {
     return () => es.close()
   })
 
-  async function manualEnsure() {
-    try {
-      const res = await fetch(`${SERVER_BASE}/api/debug/ensure`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Auth-Token': import.meta.env.VITE_DASHBOARD_TOKEN,
-        },
-        body: JSON.stringify({ org: org(), prompt: 'ensure via debug' }),
-      })
-      const json = await res.json()
-      setDebugLines((p) => [...p, `[ensure] ${JSON.stringify(json)}`])
-    } catch (e: any) {
-      setDebugLines((p) => [...p, `[ensure-error] ${String(e)}`])
-    }
-  }
-
   const editorSrc = createMemo(() => {
     const name = selectedAgent()
     if (!name) return 'about:blank'
@@ -288,10 +271,7 @@ export default function App() {
       }
       loadState()
     })
-    es.addEventListener('ensure', (e) => {
-      setChatLog((prev) => [...prev, `[system] ensure: ${(e as MessageEvent).data}`])
-      setTimeout(loadState, 1500)
-    })
+
     es.addEventListener('done', () => es.close())
     es.addEventListener('error', () => es.close())
     setTimeout(loadState, 1500)
@@ -658,12 +638,6 @@ export default function App() {
             <div class="mt-3 text-xs">
               <div class="font-semibold mb-1">Debug</div>
               <div class="flex gap-2 mb-2">
-                <button
-                  class="px-2 py-1 border rounded dark:border-slate-700"
-                  onClick={manualEnsure}
-                >
-                  Ensure Agent
-                </button>
                 <button
                   class="px-2 py-1 border rounded dark:border-slate-700"
                   onClick={() => {
