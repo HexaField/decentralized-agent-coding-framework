@@ -364,6 +364,55 @@ app.post('/api/orgs', async (req, res) => {
     const db = await getDB()
     await db.run('INSERT INTO orgs(name) VALUES (?)', name)
     const row = await db.get('SELECT id, name, created_at FROM orgs WHERE name=?', name)
+    // Auto-generate kubeconfig for this org if possible. We need an endpoint (control-plane IP).
+    // Try heuristics via tailscale status like in setup flow; otherwise, skip silently.
+    try {
+      const upper = name.toUpperCase()
+      const cpEnv = process.env[`${upper}_CP_NODES`] || ''
+      let endpoint = ''
+      if (cpEnv.trim()) endpoint = cpEnv.trim().split(/\s+/)[0]
+      else {
+        try {
+          const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 3000 })
+          if (r.code === 0 && r.out) {
+            const j = JSON.parse(r.out)
+            const peers = (j && (j.Peers || j.Peer || [])) || []
+            const self = j && j.Self ? [j.Self] : []
+            const all = Array.isArray(peers) ? peers.concat(self) : self
+            const nameMatches = (hn: string, pref: string) => hn.toLowerCase().startsWith(pref)
+            const ipv4 = (p: any): string =>
+              p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
+                ? Array.isArray(p.TailscaleIPs)
+                  ? p.TailscaleIPs.find((x: string) => x.includes('.')) || ''
+                  : String(p.TailAddr || '').includes('.')
+                    ? String(p.TailAddr)
+                    : ''
+                : ''
+            for (const p of all) {
+              const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '').toLowerCase()
+              const ip = ipv4(p)
+              if (!ip) continue
+              if (nameMatches(hn, `${name.toLowerCase()}-cp-`)) { endpoint = ip; break }
+            }
+          }
+        } catch {}
+      }
+      if (endpoint) {
+        // Call orchestrator to generate kubeconfig in shared /state
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
+        try {
+          await fetchJSON(`${ORCH_URL}/kubeconfig/generate`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ org: name, endpoint }),
+          })
+        } catch (e) {
+          // Non-fatal; user can still upload kubeconfig manually via UI.
+          console.warn('kubeconfig generate failed', e)
+        }
+      }
+    } catch {}
     res.json({ ok: true, org: row })
   } catch (e: any) {
     if (String(e && e.message).includes('UNIQUE'))
@@ -380,6 +429,37 @@ app.delete('/api/orgs/:id', async (req, res) => {
     const db = await getDB()
     await db.run('DELETE FROM orgs WHERE id=?', id)
     res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
+// Kubeconfig management for orgs (status + upload)
+app.get('/api/orgs/:name/kubeconfig/status', async (req, res) => {
+  try {
+    const name = String(req.params.name || '').trim()
+    if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
+    const p = path.join('/state', 'kube', `${name}.config`)
+    const exists = fs.existsSync(p)
+    res.json({ ok: true, exists, path: exists ? p : '' })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+app.post('/api/orgs/:name/kubeconfig', async (req, res) => {
+  if ((req.headers['x-auth-token'] as string) !== TOKEN)
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  try {
+    const name = String(req.params.name || '').trim()
+    if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
+    const body = (typeof req.body === 'object' && req.body) || {}
+    const content = String((body as any).kubeconfig || '')
+    if (!content) return res.status(400).json({ ok: false, error: 'kubeconfig required' })
+    const dir = path.join('/state', 'kube')
+    try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+    const p = path.join(dir, `${name}.config`)
+    fs.writeFileSync(p, content)
+    res.json({ ok: true, path: p })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
   }

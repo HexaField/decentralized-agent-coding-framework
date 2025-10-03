@@ -1,0 +1,12 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "rebuild-orchestrator",
+			"type": "shell",
+			"command": "bash src/scripts/start_orchestrator.sh rebuild",
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

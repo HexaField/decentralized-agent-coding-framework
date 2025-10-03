@@ -256,6 +256,67 @@ func registerHandlers(mux *http.ServeMux) {
         writeJSON(w, h)
     })
 
+    // Generate kubeconfig for an org by invoking talosctl (via a Docker container) inside this orchestrator.
+    // POST /kubeconfig/generate { org: string, endpoint: string }
+    // Writes to /state/kube/<org>.config so both orchestrator and dashboard can read it.
+    mux.HandleFunc("/kubeconfig/generate", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{ Org, Endpoint string }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        req.Org = strings.TrimSpace(req.Org)
+        req.Endpoint = strings.TrimSpace(req.Endpoint)
+        if req.Org == "" || req.Endpoint == "" {
+            http.Error(w, "missing org/endpoint", 400); return
+        }
+        // Ensure output dir exists
+        _ = os.MkdirAll("/state/kube", 0o755)
+        outPath := "/state/kube/" + req.Org + ".config"
+        // Allow overriding the talosctl image via env; default to a known tag
+        image := os.Getenv("TALOSCTL_IMAGE")
+        if image == "" { image = "ghcr.io/siderolabs/talosctl:v1.7.4" }
+        // docker run --rm -v /state/kube:/out ghcr.io/siderolabs/talosctl talosctl kubeconfig --endpoints <ip> --force --nodes <ip> --merge=false --force-context-name <org> --output /out/<org>.config
+        args := []string{
+            "run", "--rm",
+            "-v", "/state/kube:/out",
+            image,
+            "talosctl", "kubeconfig",
+            "--endpoints", req.Endpoint,
+            "--force",
+            "--nodes", req.Endpoint,
+            "--merge=false",
+            "--force-context-name", req.Org,
+            "--output", "/out/" + req.Org + ".config",
+        }
+        cmd := exec.Command("docker", args...)
+        // Pass through env minimally
+        cmd.Env = os.Environ()
+        out, err := cmd.CombinedOutput()
+        if err != nil {
+            code := 1
+            if ee, ok := err.(*exec.ExitError); ok { code = ee.ExitCode() }
+            w.WriteHeader(500)
+            writeJSON(w, map[string]any{
+                "ok": false,
+                "error": err.Error(),
+                "exitCode": code,
+                "output": string(out),
+            })
+            return
+        }
+        // Best effort: verify file exists
+        if _, err := os.Stat(outPath); err != nil {
+            w.WriteHeader(500)
+            writeJSON(w, map[string]any{
+                "ok": false,
+                "error": "kubeconfig not written",
+                "output": string(out),
+                "path": outPath,
+            })
+            return
+        }
+        writeJSON(w, map[string]any{"ok": true, "path": outPath})
+    }, "ORCHESTRATOR_TOKEN"))
+
     // Deploy an agent into the Talos org using the helper script.
     // POST /agents/deploy { org: string, image?: string }
     mux.HandleFunc("/agents/deploy", requireToken(func(w http.ResponseWriter, r *http.Request) {
