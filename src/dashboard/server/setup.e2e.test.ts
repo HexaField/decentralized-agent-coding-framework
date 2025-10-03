@@ -72,7 +72,6 @@ describe('Setup flows (real tailscale/headscale)', () => {
     // Make port selection deterministic between UI and test; match UI symptoms where 8080 may be in use
     process.env.HEADSCALE_BIND_IP = process.env.HEADSCALE_BIND_IP || '127.0.0.1'
     process.env.HEADSCALE_PORT = process.env.HEADSCALE_PORT || '8081'
-    if (!run) return
     await new Promise<void>((resolve) => {
       server = http.createServer(app)
       server!.listen(0, '127.0.0.1', () => resolve())
@@ -118,6 +117,52 @@ describe('Setup flows (real tailscale/headscale)', () => {
     },
     180_000
   )
+
+  it('orgs API can create and list org', async () => {
+    const name = `e2e-${Math.random().toString(36).slice(2, 8)}`
+    // Create
+    const createRes = await fetch(`${base}/api/orgs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Auth-Token': DASHBOARD_TOKEN,
+      },
+      body: JSON.stringify({ name }),
+    })
+    const create = await createRes.json()
+    // If already exists (rare due to random), tweak name and retry once
+    if (!createRes.ok && create && create.error === 'exists') {
+      const name2 = `${name}-x`
+      const r2 = await fetch(`${base}/api/orgs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Auth-Token': DASHBOARD_TOKEN,
+        },
+        body: JSON.stringify({ name: name2 }),
+      })
+      expect(r2.ok).toBe(true)
+    } else {
+      expect(createRes.ok).toBe(true)
+      expect(create && create.ok).toBeTruthy()
+      expect(create.org && create.org.name).toBe(name)
+    }
+
+    // List and verify
+    const list = await fetch(`${base}/api/orgs`).then((x) => x.json())
+    expect(Array.isArray(list.orgs)).toBe(true)
+    const found = (list.orgs || []).find((o: any) => o && o.name && o.name.startsWith(name))
+    expect(Boolean(found)).toBe(true)
+
+    // Cleanup: delete the created org
+    if (found && found.id) {
+      const del = await fetch(`${base}/api/orgs/${found.id}`, {
+        method: 'DELETE',
+        headers: { 'X-Auth-Token': DASHBOARD_TOKEN },
+      })
+      expect(del.ok).toBe(true)
+    }
+  })
 
   it(
     run

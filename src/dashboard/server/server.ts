@@ -339,7 +339,7 @@ async function spawnInteractiveJoin(
     }
     onLog('Opened terminal for interactive tailscale up. Complete prompts to continue.')
   } else {
-  const plainCmd = `sudo tailscale up --login-server="${loginServer}" --authkey="${authKey}" --hostname="${hostname}" --accept-dns=false --ssh=false --reset --force-reauth`
+    const plainCmd = `sudo tailscale up --login-server="${loginServer}" --authkey="${authKey}" --hostname="${hostname}" --accept-dns=false --ssh=false --reset --force-reauth`
     onLog(
       'Unsupported platform for interactive sudo. Please run this command manually: ' + plainCmd
     )
@@ -1201,7 +1201,76 @@ app.get('/api/setup/stream', async (req, res) => {
           } catch {}
         }
         for (const o of orgs) {
-          await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o])
+          // Auto-discover node IPs via Tailscale by org naming/tag conventions.
+          // Heuristics: prefer devices with HostName starting with `${org}-cp-` for control-plane
+          // and `${org}-worker-` for workers; fallback to tags `tag:org:cp` / `tag:org:worker`.
+          const discoverNodes = async (orgName: string) => {
+            const upper = orgName.toUpperCase()
+            let cp: string[] = []
+            let wk: string[] = []
+            try {
+              const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 5000 })
+              if (r.code === 0 && r.out) {
+                try {
+                  const j = JSON.parse(r.out)
+                  const peers = (j && (j.Peers || j.Peer || j.Peer || [])) || []
+                  const self = j && j.Self ? [j.Self] : []
+                  const all = Array.isArray(peers) ? peers.concat(self) : self
+                  const nameMatches = (hn: string, pref: string) =>
+                    hn.toLowerCase().startsWith(pref.toLowerCase())
+                  const ipv4 = (p: any): string =>
+                    p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
+                      ? Array.isArray(p.TailscaleIPs)
+                        ? p.TailscaleIPs.find((x: string) => x.includes('.'))
+                        : String(p.TailAddr || '').includes('.')
+                          ? String(p.TailAddr)
+                          : ''
+                      : ''
+                  // Collect by hostname prefix first
+                  for (const p of all) {
+                    const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '')
+                    const ip = ipv4(p)
+                    if (!ip) continue
+                    if (nameMatches(hn, `${orgName}-cp-`)) cp.push(ip)
+                    else if (nameMatches(hn, `${orgName}-worker-`)) wk.push(ip)
+                  }
+                  // If empty, consider tags if available
+                  const getTags = (p: any): string[] =>
+                    (p && (p.Tags || p.Tag || p.forcedTags || [])) || []
+                  if (cp.length === 0 || wk.length === 0) {
+                    for (const p of all) {
+                      const ip = ipv4(p)
+                      if (!ip) continue
+                      const tags = getTags(p).map((t: any) => String(t))
+                      if (cp.length === 0 && tags.some((t) => /(^|:)cp($|:)/i.test(t))) cp.push(ip)
+                      if (wk.length === 0 && tags.some((t) => /(^|:)worker($|:)/i.test(t)))
+                        wk.push(ip)
+                    }
+                  }
+                } catch {}
+              }
+            } catch {}
+            // Return env overrides
+            const env: Record<string, string> = {}
+            if (cp.length) env[`${upper}_CP_NODES`] = cp.join(' ')
+            if (wk.length) env[`${upper}_WORKER_NODES`] = wk.join(' ')
+            return env
+          }
+          const env = await discoverNodes(o)
+          if (!env[`${o.toUpperCase()}_CP_NODES`]) {
+            try {
+              send(
+                'hint',
+                `No control-plane nodes discovered for '${o}'. Ensure Tailscale devices are named '${o}-cp-*' and workers '${o}-worker-*', or tagged with 'cp'/'worker'.`
+              )
+            } catch {}
+          }
+          await runStep(
+            `Talos org bootstrap (${o})`,
+            resolveScript('talos_org_bootstrap.sh'),
+            [o],
+            env
+          )
           await runStep(
             `Install Tailscale Operator (${o})`,
             resolveScript('install_tailscale_operator.sh'),

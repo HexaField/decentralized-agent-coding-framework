@@ -17,23 +17,48 @@ export default function OrgWizard(props: Props): JSX.Element {
       <div class="space-y-3">
         <div>
           <label class="block text-sm font-semibold mb-1">Name</label>
-          <input class="w-full border p-2 rounded" value={org()} onInput={(e) => setOrg(e.currentTarget.value)} />
+          <input
+            class="w-full border p-2 rounded"
+            value={org()}
+            onInput={(e) => setOrg(e.currentTarget.value)}
+          />
         </div>
         <div>
           <label class="block text-sm font-semibold mb-1">Namespace prefix (optional)</label>
-          <input class="w-full border p-2 rounded" value={nsPrefix()} onInput={(e) => setNsPrefix(e.currentTarget.value)} />
+          <input
+            class="w-full border p-2 rounded"
+            value={nsPrefix()}
+            onInput={(e) => setNsPrefix(e.currentTarget.value)}
+          />
         </div>
         <div>
-          <label class="block text-sm font-semibold mb-1">Control-plane node IPs (space-separated)</label>
-          <input class="w-full border p-2 rounded" placeholder="10.0.0.10 10.0.0.11" value={cpNodes()} onInput={(e) => setCpNodes(e.currentTarget.value)} />
+          <label class="block text-sm font-semibold mb-1">
+            Control-plane node IPs (optional, space-separated)
+          </label>
+          <input
+            class="w-full border p-2 rounded"
+            placeholder="10.0.0.10 10.0.0.11"
+            value={cpNodes()}
+            onInput={(e) => setCpNodes(e.currentTarget.value)}
+          />
         </div>
         <div>
-          <label class="block text-sm font-semibold mb-1">Worker node IPs (space-separated)</label>
-          <input class="w-full border p-2 rounded" placeholder="10.0.0.20 10.0.0.21" value={workerNodes()} onInput={(e) => setWorkerNodes(e.currentTarget.value)} />
+          <label class="block text-sm font-semibold mb-1">
+            Worker node IPs (optional, space-separated)
+          </label>
+          <input
+            class="w-full border p-2 rounded"
+            placeholder="10.0.0.20 10.0.0.21"
+            value={workerNodes()}
+            onInput={(e) => setWorkerNodes(e.currentTarget.value)}
+          />
         </div>
       </div>
       <div class="mt-4 flex gap-2">
-        <button class="px-3 py-2 bg-indigo-600 text-white rounded" onClick={() => org().trim() && props.onCreate(org().trim())}>
+        <button
+          class="px-3 py-2 bg-indigo-600 text-white rounded"
+          onClick={() => org().trim() && props.onCreate(org().trim())}
+        >
           Create
         </button>
         <button class="px-3 py-2 border rounded" onClick={() => props.onCancel()}>
@@ -41,7 +66,9 @@ export default function OrgWizard(props: Props): JSX.Element {
         </button>
       </div>
       <div class="mt-3 text-sm opacity-70">
-        Tip: Orgs are stored in the dashboard database. You can refine settings during bootstrap from the UI.
+        Tip: Orgs are stored in the dashboard database. IPs are optional—if left blank, we
+        auto-discover nodes via Tailscale by tags or names like &lt;org&gt;-cp-*,
+        &lt;org&gt;-worker-*.
       </div>
     </div>
   )
