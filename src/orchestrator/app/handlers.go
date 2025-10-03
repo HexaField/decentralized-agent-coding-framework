@@ -106,6 +106,19 @@ func getenvDefault(k, def string) string {
     return v
 }
 
+// resolve a writable base directory for persistent state
+// order: env HEXA_STATE_DIR or STATE_BASE_DIR -> /state -> ~/.hexa/state
+func stateBaseDir() string {
+    if v := os.Getenv("HEXA_STATE_DIR"); v != "" { _ = os.MkdirAll(v, 0o755); return v }
+    if v := os.Getenv("STATE_BASE_DIR"); v != "" { _ = os.MkdirAll(v, 0o755); return v }
+    if fi, err := os.Stat("/state"); err == nil && fi.IsDir() { _ = os.MkdirAll("/state", 0o755); return "/state" }
+    home, _ := os.UserHomeDir()
+    if home == "" { home = "." }
+    base := home + "/.hexa/state"
+    _ = os.MkdirAll(base, 0o755)
+    return base
+}
+
 // ensureEditorForward starts (or returns) a kubectl port-forward to the agent's Service
 func ensureEditorForward(name, org string) (int, error) {
     svcName := deriveServiceName(name)
@@ -269,7 +282,7 @@ func registerHandlers(mux *http.ServeMux) {
         writeJSON(w, h)
     })
 
-    // Generate kubeconfig for an org by invoking talosctl (via a Docker container) inside this orchestrator.
+    // Generate kubeconfig for an org by invoking talosctl inside this orchestrator container.
     // POST /kubeconfig/generate { org: string, endpoint: string }
     // Writes to /state/kube/<org>.config so both orchestrator and dashboard can read it.
     mux.HandleFunc("/kubeconfig/generate", requireToken(func(w http.ResponseWriter, r *http.Request) {
@@ -281,27 +294,35 @@ func registerHandlers(mux *http.ServeMux) {
         if req.Org == "" || req.Endpoint == "" {
             http.Error(w, "missing org/endpoint", 400); return
         }
-        // Ensure output dir exists
-        _ = os.MkdirAll("/state/kube", 0o755)
-        outPath := "/state/kube/" + req.Org + ".config"
-        // Allow overriding the talosctl image via env; default to a known tag
-        image := os.Getenv("TALOSCTL_IMAGE")
-        if image == "" { image = "ghcr.io/siderolabs/talosctl:v1.7.4" }
-        // docker run --rm -v /state/kube:/out ghcr.io/siderolabs/talosctl talosctl kubeconfig --endpoints <ip> --force --nodes <ip> --merge=false --force-context-name <org> --output /out/<org>.config
+    // Ensure output dir exists
+    base := stateBaseDir()
+    _ = os.MkdirAll(base+"/kube", 0o755)
+    outPath := base+"/kube/" + req.Org + ".config"
+        // Run talosctl directly; include talosconfig if present for this org.
         args := []string{
-            "run", "--rm",
-            "-v", "/state/kube:/out",
-            image,
-            "talosctl", "kubeconfig",
+            "kubeconfig",
             "--endpoints", req.Endpoint,
             "--force",
             "--nodes", req.Endpoint,
             "--merge=false",
             "--force-context-name", req.Org,
-            "--output", "/out/" + req.Org + ".config",
+            outPath,
         }
-        cmd := exec.Command("docker", args...)
-        // Pass through env minimally
+        // If a talosconfig exists and has meaningful content, pass it explicitly
+    if fi, err := os.Stat(base+"/talos/" + req.Org + ".talosconfig"); err == nil && fi.Size() > 0 {
+        if b, err := os.ReadFile(base+"/talos/" + req.Org + ".talosconfig"); err == nil {
+                txt := string(b)
+                hasMeaning := false
+                for _, line := range strings.Split(txt, "\n") {
+                    t := strings.TrimSpace(line)
+                    if t != "" && !strings.HasPrefix(t, "#") { hasMeaning = true; break }
+                }
+                if hasMeaning && (strings.Contains(strings.ToLower(txt), "context:") || strings.Contains(strings.ToLower(txt), "contexts:")) {
+            args = append([]string{"--talosconfig", base+"/talos/" + req.Org + ".talosconfig"}, args...)
+                }
+            }
+        }
+        cmd := exec.Command("talosctl", args...)
         cmd.Env = os.Environ()
         out, err := cmd.CombinedOutput()
         if err != nil {
@@ -328,6 +349,90 @@ func registerHandlers(mux *http.ServeMux) {
             return
         }
         writeJSON(w, map[string]any{"ok": true, "path": outPath})
+    }, "ORCHESTRATOR_TOKEN"))
+
+    // Bootstrap an org's Talos cluster and produce working defaults without manual edits.
+    // POST /orgs/bootstrap { org: string, cpNodes: [string], workerNodes?: [string] }
+    // Steps: gen config -> apply to cp1 (init) -> apply to remaining CPs (controlplane) -> apply to workers (join) -> bootstrap -> write talosconfig/kubeconfig
+    mux.HandleFunc("/orgs/bootstrap", requireToken(func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        var req struct{
+            Org string `json:"org"`
+            CPNodes []string `json:"cpNodes"`
+            WorkerNodes []string `json:"workerNodes"`
+        }
+        if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
+        req.Org = strings.TrimSpace(req.Org)
+        if req.Org == "" || len(req.CPNodes) == 0 { http.Error(w, "missing org/cpNodes", 400); return }
+        cp1 := strings.TrimSpace(req.CPNodes[0])
+        // Prepare dirs
+    base := stateBaseDir()
+    _ = os.MkdirAll(base+"/talos", 0o755)
+    _ = os.MkdirAll(base+"/kube", 0o755)
+        // Temp work dir per request
+        workDir := "/tmp/talos-" + req.Org + "-" + time.Now().Format("20060102150405")
+        _ = os.MkdirAll(workDir, 0o755)
+        run := func(name string, args ...string) (string, error) {
+            cmd := exec.Command(name, args...)
+            cmd.Env = os.Environ()
+            out, err := cmd.CombinedOutput()
+            if err != nil {
+                if ee, ok := err.(*exec.ExitError); ok {
+                    return string(out), fmt.Errorf("%s failed (code %d): %w\n%s", name, ee.ExitCode(), err, string(out))
+                }
+                return string(out), fmt.Errorf("%s failed: %w\n%s", name, err, string(out))
+            }
+            return string(out), nil
+        }
+        outputs := make([]string, 0, 8)
+        appendOut := func(tag, out string) { outputs = append(outputs, fmt.Sprintf("[%s]\n%s", tag, out)) }
+        // 1) gen config (produces controlplane.yaml, worker.yaml, and talosconfig)
+        out, err := run("talosctl", "gen", "config", req.Org, "https://"+cp1+":6443", "--output-dir", workDir)
+        appendOut("gen config", out)
+        if err != nil { w.WriteHeader(500); writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "log": strings.Join(outputs, "\n")}); return }
+        // Sanity: ensure expected files exist
+        cpFile := workDir+"/controlplane.yaml"
+        wkFile := workDir+"/worker.yaml"
+        if _, e := os.Stat(cpFile); e != nil { w.WriteHeader(500); writeJSON(w, map[string]any{"ok": false, "error": "missing controlplane.yaml: "+e.Error(), "log": strings.Join(outputs, "\n")}); return }
+        if _, e := os.Stat(wkFile); e != nil { appendOut("warn", "worker.yaml not found; proceeding without worker configs") }
+    // 2) apply initial control-plane (use mode=auto for initial bring-up)
+    out, err = run("talosctl", "--nodes", cp1, "apply-config", "--insecure", "--file", cpFile, "--mode=auto")
+        appendOut("apply init", out)
+        if err != nil { w.WriteHeader(500); writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "log": strings.Join(outputs, "\n")}); return }
+        // 3) apply controlplane to the rest of CP nodes
+        if len(req.CPNodes) > 1 {
+            for _, n := range req.CPNodes[1:] {
+                n = strings.TrimSpace(n); if n == "" { continue }
+                out, err = run("talosctl", "--nodes", n, "apply-config", "--insecure", "--file", cpFile)
+                appendOut("apply controlplane "+n, out)
+                if err != nil { w.WriteHeader(500); writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "log": strings.Join(outputs, "\n")}); return }
+            }
+        }
+        // 4) apply join to workers
+        for _, wn := range req.WorkerNodes {
+            wn = strings.TrimSpace(wn); if wn == "" { continue }
+            // use worker.yaml
+            out, err = run("talosctl", "--nodes", wn, "apply-config", "--insecure", "--file", wkFile)
+            appendOut("apply worker "+wn, out)
+            if err != nil { w.WriteHeader(500); writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "log": strings.Join(outputs, "\n")}); return }
+        }
+        // 5) bootstrap
+    talosPath := base+"/talos/" + req.Org + ".talosconfig"
+        // The generated talosconfig is usually named 'talosconfig' in the output dir
+        if b, rerr := os.ReadFile(workDir+"/talosconfig"); rerr == nil { _ = os.WriteFile(talosPath, b, 0o600) }
+        argsBoot := []string{"--endpoints", cp1, "bootstrap"}
+        if _, e := os.Stat(talosPath); e == nil { argsBoot = append([]string{"--talosconfig", talosPath}, argsBoot...) }
+        out, err = run("talosctl", argsBoot...)
+        appendOut("bootstrap", out)
+        if err != nil { w.WriteHeader(500); writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "log": strings.Join(outputs, "\n")}); return }
+        // 6) kubeconfig
+    outPath := base+"/kube/" + req.Org + ".config"
+        argsKC := []string{"kubeconfig", "--endpoints", cp1, "--force", "--nodes", cp1, "--merge=false", "--force-context-name", req.Org, outPath}
+        if _, e := os.Stat(talosPath); e == nil { argsKC = append([]string{"--talosconfig", talosPath}, argsKC...) }
+        out, err = run("talosctl", argsKC...)
+        appendOut("kubeconfig", out)
+        if err != nil { w.WriteHeader(500); writeJSON(w, map[string]any{"ok": false, "error": err.Error(), "log": strings.Join(outputs, "\n")}); return }
+        writeJSON(w, map[string]any{"ok": true, "talos": talosPath, "kubeconfig": outPath, "log": strings.Join(outputs, "\n")})
     }, "ORCHESTRATOR_TOKEN"))
 
     // Deploy an agent into the org cluster.

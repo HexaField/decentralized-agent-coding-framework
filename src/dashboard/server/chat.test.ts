@@ -5,7 +5,7 @@ import http from 'http'
 // via orchestrator and triggers a best-effort ensure. We stub the orchestrator responses to
 // keep the test hermetic while verifying real dashboard behavior (/api/chat -> /api/state).
 
-describe('Dashboard chat schedules task and shows agent [integration]', () => {
+describe('Dashboard chat MUST schedule task and SHOULD show agent [integration]', () => {
   let dashServer: http.Server | null = null
   let orchServer: http.Server | null = null
   let base: string = 'http://127.0.0.1:0'
@@ -66,7 +66,7 @@ describe('Dashboard chat schedules task and shows agent [integration]', () => {
     if (orchServer) await new Promise((r) => orchServer!.close(() => r(null as any)))
   })
 
-  it('accepts chat and state shows at least one agent', async () => {
+  it('MUST accept chat and state SHOULD show at least one agent', async () => {
     const org = process.env.ORG || 'acme'
     const r = await fetch(`${base}/api/chat`, {
       method: 'POST',

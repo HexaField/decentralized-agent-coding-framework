@@ -6,7 +6,7 @@ import httpProxy from 'http-proxy'
 // standing up a stub orchestrator that exposes /agents, /agents/editor/open and /editor/proxy/:port
 // endpoints. The proxy target serves a simple HTML page to emulate code-server.
 
-describe('Dashboard editor embed (orchestrator-forwarded) [integration]', () => {
+describe('Dashboard MUST embed editor via orchestrator-forwarded proxy [integration]', () => {
   let dashServer: http.Server | null = null
   let orchServer: http.Server | null = null
   let editorServer: http.Server | null = null
@@ -92,7 +92,7 @@ describe('Dashboard editor embed (orchestrator-forwarded) [integration]', () => 
     if (editorServer) await new Promise((r) => editorServer!.close(() => r(null as any)))
   })
 
-  it('opens an editor and serves it via /embed/orchestrator/:port', async () => {
+  it('MUST open an editor and serve it via /embed/orchestrator/:port', async () => {
     const org = process.env.ORG || 'acme'
     // discover agent from state
     const s = await fetch(`${base}/api/state`)

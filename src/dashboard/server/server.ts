@@ -102,13 +102,14 @@ app.use((req, res, next) => {
 
 function fetchJSON(
   urlStr: string,
-  opts: { method?: string; headers?: Record<string, string>; body?: any } = {}
+  opts: { method?: string; headers?: Record<string, string>; body?: any; timeoutMs?: number } = {}
 ): Promise<any> {
   return new Promise((resolve, reject) => {
     const attempt = (raw: string, triedFallback = false) => {
       const u = new URL(raw)
       const isHttps = u.protocol === 'https:'
       const lib = isHttps ? https : http
+      const timeoutMs = Math.max(300, Number(opts.timeoutMs || 8000))
       const req = lib.request(
         {
           hostname: u.hostname,
@@ -142,6 +143,12 @@ function fetchJSON(
           })
         }
       )
+      // Fail the request if it takes too long
+      req.setTimeout(timeoutMs, () => {
+        try {
+          req.destroy(new Error(`timeout after ${timeoutMs}ms`))
+        } catch {}
+      })
       req.on('error', (err: any) => {
         const msg = String((err && (err.code || err.message)) || '')
         if (
@@ -171,8 +178,7 @@ const chats: { global: Array<{ role: 'user' | 'assistant' | 'system'; text: stri
 let dbPromise: Promise<Database<sqlite3.Database, sqlite3.Statement>> | null = null
 function getDB() {
   if (!dbPromise) {
-    const repoRoot = path.resolve(path.dirname(here), '..')
-    const dataDir = process.env.DASHBOARD_DATA_DIR || path.join(repoRoot, '..', 'state')
+    const dataDir = process.env.DASHBOARD_DATA_DIR || stateBaseDir()
     const dbPath = path.join(dataDir, 'dashboard.db')
     fs.mkdirSync(dataDir, { recursive: true })
     dbPromise = open({ filename: dbPath, driver: sqlite3.Database }).then(async (db) => {
@@ -189,6 +195,32 @@ function getDB() {
 }
 
 // Helpers: small process runners and platform actions
+// Resolve a writable base directory for persistent state.
+// Order: HEXA_STATE_DIR or DASHBOARD_STATE_DIR -> /state -> ~/.hexa/state -> ./.hexa/state
+function stateBaseDir(): string {
+  const prefer = process.env.HEXA_STATE_DIR || process.env.DASHBOARD_STATE_DIR
+  if (prefer) {
+    try {
+      fs.mkdirSync(prefer, { recursive: true })
+      return prefer
+    } catch {}
+  }
+  try {
+    fs.mkdirSync('/state', { recursive: true })
+    return '/state'
+  } catch {}
+  try {
+    const home = process.env.HOME || process.env.USERPROFILE || '.'
+    const dir = path.join(home, '.hexa', 'state')
+    fs.mkdirSync(dir, { recursive: true })
+    return dir
+  } catch {}
+  const fallback = path.resolve(process.cwd(), '.hexa', 'state')
+  try {
+    fs.mkdirSync(fallback, { recursive: true })
+  } catch {}
+  return fallback
+}
 async function runQuick(cmd: string, args: string[], opts: { timeoutMs?: number } = {}) {
   return await new Promise<{ code: number; out: string }>((resolve) => {
     const p = spawn(cmd, args)
@@ -364,6 +396,34 @@ app.post('/api/orgs', async (req, res) => {
     const db = await getDB()
     await db.run('INSERT INTO orgs(name) VALUES (?)', name)
     const row = await db.get('SELECT id, name, created_at FROM orgs WHERE name=?', name)
+    // Create default placeholder configs for this org (kubeconfig and talosconfig)
+    try {
+      const repoRoot = path.resolve(path.dirname(here), '..')
+      const tplDir = path.join(repoRoot, 'configs', 'templates')
+      const base = stateBaseDir()
+      const talosTpl = path.join(tplDir, 'talosconfig.template.yaml')
+      const kubeTpl = path.join(tplDir, 'kubeconfig.template.yaml')
+      const talosDir = path.join(base, 'talos')
+      const kubeDir = path.join(base, 'kube')
+      fs.mkdirSync(talosDir, { recursive: true })
+      fs.mkdirSync(kubeDir, { recursive: true })
+      const talosPath = path.join(talosDir, `${name}.talosconfig`)
+      const kubePath = path.join(kubeDir, `${name}.config`)
+      if (!fs.existsSync(talosPath)) {
+        const content = fs.existsSync(talosTpl)
+          ? fs.readFileSync(talosTpl)
+          : Buffer.from('# talosconfig placeholder\n')
+        fs.writeFileSync(talosPath, content)
+      }
+      if (!fs.existsSync(kubePath)) {
+        const content = fs.existsSync(kubeTpl)
+          ? fs.readFileSync(kubeTpl)
+          : Buffer.from('# kubeconfig placeholder\n')
+        fs.writeFileSync(kubePath, content)
+      }
+    } catch (e) {
+      console.warn('placeholder config creation failed:', e)
+    }
     // Auto-generate kubeconfig for this org if possible. We need an endpoint (control-plane IP).
     // Try heuristics via tailscale status like in setup flow; otherwise, skip silently.
     try {
@@ -389,10 +449,15 @@ app.post('/api/orgs', async (req, res) => {
                     : ''
                 : ''
             for (const p of all) {
-              const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '').toLowerCase()
+              const hn = String(
+                (p && (p.HostName || p.Hostname || p.DNSName || '')) || ''
+              ).toLowerCase()
               const ip = ipv4(p)
               if (!ip) continue
-              if (nameMatches(hn, `${name.toLowerCase()}-cp-`)) { endpoint = ip; break }
+              if (nameMatches(hn, `${name.toLowerCase()}-cp-`)) {
+                endpoint = ip
+                break
+              }
             }
           }
         } catch {}
@@ -439,9 +504,17 @@ app.get('/api/orgs/:name/kubeconfig/status', async (req, res) => {
   try {
     const name = String(req.params.name || '').trim()
     if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
-    const p = path.join('/state', 'kube', `${name}.config`)
+    const p = path.join(stateBaseDir(), 'kube', `${name}.config`)
     const exists = fs.existsSync(p)
-    res.json({ ok: true, exists, path: exists ? p : '' })
+    let real = exists
+    if (exists) {
+      try {
+        const text = fs.readFileSync(p, 'utf8')
+        const meaningful = text.split(/\r?\n/).some((ln) => ln.trim() && !ln.trim().startsWith('#'))
+        real = meaningful && /apiVersion:\s*v1/i.test(text) && /kind:\s*Config/i.test(text)
+      } catch {}
+    }
+    res.json({ ok: true, exists: real, path: real ? p : '' })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
   }
@@ -455,13 +528,107 @@ app.post('/api/orgs/:name/kubeconfig', async (req, res) => {
     const body = (typeof req.body === 'object' && req.body) || {}
     const content = String((body as any).kubeconfig || '')
     if (!content) return res.status(400).json({ ok: false, error: 'kubeconfig required' })
-    const dir = path.join('/state', 'kube')
-    try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+    const dir = path.join(stateBaseDir(), 'kube')
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch {}
     const p = path.join(dir, `${name}.config`)
     fs.writeFileSync(p, content)
     res.json({ ok: true, path: p })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
+// Talosconfig management for orgs (status + upload)
+app.get('/api/orgs/:name/talosconfig/status', async (req, res) => {
+  try {
+    const name = String(req.params.name || '').trim()
+    if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
+    const p = path.join(stateBaseDir(), 'talos', `${name}.talosconfig`)
+    const exists = fs.existsSync(p)
+    let real = exists
+    if (exists) {
+      try {
+        const text = fs.readFileSync(p, 'utf8')
+        const meaningful = text.split(/\r?\n/).some((ln) => ln.trim() && !ln.trim().startsWith('#'))
+        real = meaningful && /contexts?:/i.test(text)
+      } catch {}
+    }
+    res.json({ ok: true, exists: real, path: real ? p : '' })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+app.post('/api/orgs/:name/talosconfig', async (req, res) => {
+  if ((req.headers['x-auth-token'] as string) !== TOKEN)
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  try {
+    const name = String(req.params.name || '').trim()
+    if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
+    const body = (typeof req.body === 'object' && req.body) || {}
+    const content = String((body as any).talosconfig || '')
+    if (!content) return res.status(400).json({ ok: false, error: 'talosconfig required' })
+    const dir = path.join(stateBaseDir(), 'talos')
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch {}
+    const p = path.join(dir, `${name}.talosconfig`)
+    fs.writeFileSync(p, content)
+    res.json({ ok: true, path: p })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
+// Generate kubeconfig for an org by proxying to the orchestrator
+app.post('/api/orgs/:name/kubeconfig/generate', async (req, res) => {
+  if ((req.headers['x-auth-token'] as string) !== TOKEN)
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  try {
+    const name = String(req.params.name || '').trim()
+    if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
+    const body = (typeof req.body === 'object' && req.body) || {}
+    const endpoint = String((body as any).endpoint || '').trim()
+    if (!endpoint) return res.status(400).json({ ok: false, error: 'endpoint required' })
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/kubeconfig/generate`, {
+      method: 'POST',
+      headers,
+      body: { org: name, endpoint },
+    })
+    // Reflect orchestrator response directly
+    res.json(out)
+  } catch (e) {
+    res.status(502).json({ ok: false, error: String(e) })
+  }
+})
+
+// Bootstrap an org cluster end-to-end using orchestrator (talosctl gen/apply/bootstrap)
+app.post('/api/orgs/:name/bootstrap', async (req, res) => {
+  if ((req.headers['x-auth-token'] as string) !== TOKEN)
+    return res.status(401).json({ ok: false, error: 'unauthorized' })
+  const org = String(req.params.name || '').trim()
+  if (!org) return res.status(400).json({ ok: false, error: 'bad name' })
+  const body = (typeof req.body === 'object' && req.body) || {}
+  const cpNodes: string[] = Array.isArray((body as any).cpNodes) ? (body as any).cpNodes : []
+  const workerNodes: string[] = Array.isArray((body as any).workerNodes)
+    ? (body as any).workerNodes
+    : []
+  if (!cpNodes.length) return res.status(400).json({ ok: false, error: 'cpNodes required' })
+
+  // 1) Try orchestrator path first
+  try {
+    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const out = await fetchJSON(`${ORCH_URL}/orgs/bootstrap`, {
+      method: 'POST',
+      headers,
+      body: { org, cpNodes, workerNodes },
+    })
+    return res.json(out)
+  } catch (e: any) {
+    const msg = e?.message ? String(e.message) : String(e)
+    return res.status(502).json({ ok: false, error: msg || 'orchestrator bootstrap failed' })
   }
 })
 // removed unused agentChats
@@ -641,7 +808,9 @@ app.get('/api/taskStatus', async (req, res) => {
   if (!id) return res.status(400).json({ error: 'missing id' })
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/tasks/status?id=${encodeURIComponent(id)}`, { headers })
+    const out = await fetchJSON(`${ORCH_URL}/tasks/status?id=${encodeURIComponent(id)}`, {
+      headers,
+    })
     res.json(out)
   } catch (e) {
     res.status(502).json({ error: String(e) })
@@ -652,7 +821,11 @@ app.post('/api/task/cancel', async (req, res) => {
     const id = (req.body && String(req.body.id || '').trim()) || ''
     if (!id) return res.status(400).json({ error: 'missing id' })
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/tasks/cancel`, { method: 'POST', headers, body: { id } })
+    const out = await fetchJSON(`${ORCH_URL}/tasks/cancel`, {
+      method: 'POST',
+      headers,
+      body: { id },
+    })
     res.json(out)
   } catch (e) {
     res.status(502).json({ error: String(e) })
@@ -697,9 +870,9 @@ app.get('/api/setup/status', async (req, res) => {
     // fast path: return persisted state if recent
     const row = await db.get('SELECT value FROM kv WHERE key=?', 'tailscale_connected')
     const persisted = row ? row.value === '1' : false
-    // If we've ever connected, keep it sticky unless explicitly reset.
     if (persisted) return res.json({ ok: true, connected: true })
-    // Otherwise, probe tailscale; "tailscale status --json" or fallback to Headscale /health
+
+    // Probe tailscale; "tailscale status --json" or fallback to Headscale /health
     let connected = false
     try {
       const out = await new Promise<string>((resolve, reject) => {
@@ -718,7 +891,6 @@ app.get('/api/setup/status', async (req, res) => {
         connected = /relay|wgpeer|hostinfo/i.test(out)
       }
     } catch {
-      // Optional: if we have HS URL, try its /health as a very weak signal
       const hsUrl = process.env.HEADSCALE_URL
       if (hsUrl) {
         try {
@@ -727,43 +899,22 @@ app.get('/api/setup/status', async (req, res) => {
         } catch {}
       }
     }
+
     // persist only positive detection; do not downgrade sticky state here
     if (connected) {
-      await db.run(
-        'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
-        'tailscale_connected',
-        '1'
-      )
+      try {
+        await db.run(
+          'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+          'tailscale_connected',
+          '1'
+        )
+      } catch {}
     }
+
     res.json({ ok: true, connected })
   } catch (e) {
     res.status(200).json({ ok: false, connected: false, error: String(e) })
   }
-})
-// SSE proxy: tasks
-app.get('/api/stream/task', (req, res) => {
-  const id = String(req.query.id || '')
-  if (!id) return res.status(400).end('missing id')
-  const headers: Record<string, string> = {}
-  if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
-  const targetUrl = new URL(`${ORCH_URL}/events/tasks?id=${encodeURIComponent(id)}`)
-  // forward request manually to preserve SSE
-  const lib = targetUrl.protocol === 'https:' ? https : http
-  const r = lib.request(
-    {
-      method: 'GET',
-      hostname: targetUrl.hostname,
-      port: Number(targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80)),
-      path: targetUrl.pathname + targetUrl.search,
-      headers,
-    },
-    (rr) => {
-      res.writeHead(rr.statusCode || 200, rr.headers)
-      rr.pipe(res)
-    }
-  )
-  r.on('error', () => res.end())
-  r.end()
 })
 // SSE proxy: agents
 app.get('/api/stream/agent', (req, res) => {

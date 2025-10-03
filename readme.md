@@ -38,7 +38,27 @@ bash src/scripts/start_orchestrator.sh up
 
 The Create flow performs preflight checks and can bootstrap org clusters, install the Tailscale Operator, and deploy a small demo app.
 
-3) Access over Tailscale from any device on the same tailnet
+3) Bootstrap or provide Talos config, then generate kubeconfig (GUI; once per org)
+- In the dashboard Org Manager, you can now Bootstrap a cluster: select the org, enter control-plane node IPs (and optional workers), and click Bootstrap. The orchestrator runs `talosctl gen config`, applies configs to nodes, bootstraps the cluster, persists `/state/talos/<org>.talosconfig`, and writes `/state/kube/<org>.config`.
+- Alternatively, upload or paste an existing Talos config, then enter the Talos endpoint (IP/DNS) and click “Generate kubeconfig”.
+
+Note: When a new org is created, placeholder files are auto-created at `/state/talos/<org>.talosconfig` and `/state/kube/<org>.config` using templates in `src/configs/templates/`. The dashboard treats placeholders as “missing” until they contain real content. With Bootstrap, these become real automatically; otherwise upload a Talos config and then generate the kubeconfig.
+
+4) Install the AgentTask CRD and Operator into the org cluster (one-time per cluster)
+```bash
+# from repo root, with your KUBECONFIG pointing at the org cluster
+kubectl apply -k src/k8s/operator
+```
+
+5) Prepare the namespace used by the operator (default: mvp-agents)
+- In the dashboard Org Manager, click "Prepare Namespace" (or run via API: POST /k8s/prepare).
+
+6) Schedule a task for that org (CRD/operator flow)
+- Use the dashboard chat to send a task for your org (e.g., "acme").
+- The orchestrator creates an AgentTask CR; the Operator reconciles an Agent Deployment/Service.
+- Access the editor via the dashboard link or the orchestrator’s editor proxy.
+
+7) Access over Tailscale from any device on the same tailnet
 - Dashboard: https://<your-tailnet-IP-or-MagicDNS-name>:8090
 - Orchestrator health: http://<your-tailnet-IP-or-MagicDNS-name>:18080/health
 Note: tokens from your `.env` (DASHBOARD_TOKEN, ORCHESTRATOR_TOKEN) gate mutating actions.

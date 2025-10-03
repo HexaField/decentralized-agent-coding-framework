@@ -86,7 +86,7 @@ async function tailscaleConnected() {
   }
 }
 
-describe('Setup flows (real tailscale/headscale)', () => {
+describe('Setup flows (real tailscale/headscale): MUST succeed when properly configured', () => {
   const run = process.env.RUN_TAILSCALE_E2E === '1'
   let server: http.Server | null = null
   let base: string = 'http://127.0.0.1:0'
@@ -109,7 +109,7 @@ describe('Setup flows (real tailscale/headscale)', () => {
   })
 
   it(
-    run ? 'join existing network flow succeeds' : 'join existing network flow (skipped)',
+    run ? 'MUST join existing network flow' : 'join existing network flow (skipped)',
     async () => {
       if (!run) return
       const hs = process.env.HEADSCALE_URL
@@ -143,7 +143,7 @@ describe('Setup flows (real tailscale/headscale)', () => {
     180_000
   )
 
-  it('orgs API can create and list org', async () => {
+  it('MUST create and list an org via orgs API', async () => {
     const name = `e2e-${Math.random().toString(36).slice(2, 8)}`
     // Create
     const createRes = await fetch(`${base}/api/orgs`, {
