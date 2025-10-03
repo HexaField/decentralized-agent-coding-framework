@@ -189,6 +189,163 @@ function getDB() {
   return dbPromise
 }
 
+// Helpers: small process runners and platform actions
+async function runQuick(cmd: string, args: string[], opts: { timeoutMs?: number } = {}) {
+  return await new Promise<{ code: number; out: string }>((resolve) => {
+    const p = spawn(cmd, args)
+    let out = ''
+    const t = opts.timeoutMs
+      ? setTimeout(() => {
+          try {
+            p.kill('SIGKILL')
+          } catch {}
+          resolve({ code: 124, out })
+        }, opts.timeoutMs)
+      : null
+    p.stdout.on('data', (d) => (out += String(d)))
+    p.stderr.on('data', (d) => (out += String(d)))
+    p.on('close', (code) => {
+      if (t) clearTimeout(t)
+      resolve({ code: code ?? 0, out })
+    })
+  })
+}
+
+async function isPasswordlessSudo(): Promise<boolean> {
+  const r = await runQuick('sudo', ['-n', 'true'], { timeoutMs: 3000 }).catch(() => ({ code: 1 }))
+  return (r && r.code === 0) || false
+}
+
+async function ensureTailscaleService(hasPwless: boolean, onLog?: (s: string) => void) {
+  const log = (s: string) => {
+    try {
+      onLog && onLog(s)
+    } catch {}
+  }
+  // quick probe
+  let probe = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 3000 }).catch(() => ({
+    code: 1,
+    out: '',
+  }))
+  if (probe.code === 0) return true
+  if (process.platform === 'darwin') {
+    // Start the app which hosts the service
+    await runQuick('open', ['-a', 'Tailscale']).catch(() => ({ code: 1 }) as any)
+    // Poll up to 30s for service to become reachable
+    const end = Date.now() + 30000
+    while (Date.now() < end) {
+      probe = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 2000 }).catch(() => ({
+        code: 1,
+        out: '',
+      }))
+      if (probe.code === 0) return true
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    log('Tailscale service not reachable after starting app')
+    return false
+  }
+  // Linux best-effort
+  if (hasPwless) {
+    // Try systemd first
+    await runQuick('sudo', ['-n', 'systemctl', 'start', 'tailscaled'], { timeoutMs: 5000 }).catch(
+      () => ({ code: 1 }) as any
+    )
+    // Poll up to 30s
+    const end = Date.now() + 30000
+    while (Date.now() < end) {
+      probe = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 2000 }).catch(() => ({
+        code: 1,
+        out: '',
+      }))
+      if (probe.code === 0) return true
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    log('tailscaled not reachable; ensure it is installed and running')
+  } else {
+    log('No passwordless sudo; cannot start tailscaled automatically')
+  }
+  return false
+}
+
+async function pollTailscaleConnected(maxMs = 120000): Promise<boolean> {
+  const end = Date.now() + maxMs
+  while (Date.now() < end) {
+    const r = await new Promise<{ ok: boolean }>((resolve) => {
+      const p = spawn('tailscale', ['status', '--json'])
+      let buf = ''
+      p.stdout.on('data', (d) => (buf += String(d)))
+      p.stderr.on('data', (d) => (buf += String(d)))
+      p.on('close', (code) => {
+        if (code === 0) {
+          try {
+            const j = JSON.parse(buf)
+            const selfOk = Boolean(j && j.Self && (j.Self.TailAddr || j.Self.HostName))
+            const backendOk = String(j && j.BackendState) === 'Running'
+            const tailnetOk = Boolean((j && (j.Tailnet || j.CurrentTailnet)) || false)
+            resolve({ ok: selfOk || backendOk || tailnetOk })
+          } catch {
+            resolve({ ok: /relay|wgpeer|hostinfo/i.test(buf) })
+          }
+        } else resolve({ ok: false })
+      })
+    })
+    if (r.ok) return true
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  return false
+}
+
+function escapeAppleScriptString(s: string) {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+async function spawnInteractiveJoin(
+  loginServer: string,
+  authKey: string,
+  hostname: string,
+  onLog: (line: string) => void
+): Promise<void> {
+  const upCmd = `sudo tailscale up --login-server=\"${loginServer}\" --authkey=\"${authKey}\" --hostname=\"${hostname}\" --accept-dns=false --ssh=false --reset --force-reauth`
+  const plat = process.platform
+  if (plat === 'darwin') {
+    // Open Terminal and run, then exit. Terminal may close if user prefers close-on-exit.
+    // Proactively open Tailscale.app to surface any system permission prompts early.
+    await runQuick('open', ['-a', 'Tailscale']).catch(() => ({ code: 1 }) as any)
+    // Give the helper a moment to start
+    await new Promise((r) => setTimeout(r, 1000))
+    // Shell sequence: ensure service, then up
+    const macShell = `bash -lc 'if ! tailscale status --json >/dev/null 2>&1; then open -a Tailscale || true; for i in {1..30}; do tailscale status --json >/dev/null 2>&1 && break; sleep 1; done; fi; ${upCmd}; echo "Done. You can close this window."; exit'`
+    const scriptLines = [
+      'tell application "Terminal"',
+      'activate',
+      `do script "${escapeAppleScriptString(macShell)}"`,
+      'end tell',
+    ]
+    await runQuick(
+      'osascript',
+      scriptLines.flatMap((l) => ['-e', l])
+    )
+    onLog(
+      'Opened Terminal for interactive tailscale up. Enter your password when prompted. If macOS shows Network Extension permission prompts, approve them.'
+    )
+  } else if (plat === 'linux') {
+    // Best-effort: try gnome-terminal, then xterm
+    const shellCmd = `bash -lc 'if ! tailscale status --json >/dev/null 2>&1; then sudo systemctl start tailscaled || sudo service tailscaled start || true; for i in {1..30}; do tailscale status --json >/dev/null 2>&1 && break; sleep 1; done; fi; ${upCmd}; echo "Done. You can close this window."; read -n 1 -s -r -p "Press any key to close"'`
+    const try1 = await runQuick('gnome-terminal', ['--', 'bash', '-lc', shellCmd], {
+      timeoutMs: 3000,
+    })
+    if (try1.code !== 0) {
+      await runQuick('xterm', ['-e', shellCmd]).catch(() => ({}) as any)
+    }
+    onLog('Opened terminal for interactive tailscale up. Complete prompts to continue.')
+  } else {
+  const plainCmd = `sudo tailscale up --login-server="${loginServer}" --authkey="${authKey}" --hostname="${hostname}" --accept-dns=false --ssh=false --reset --force-reauth`
+    onLog(
+      'Unsupported platform for interactive sudo. Please run this command manually: ' + plainCmd
+    )
+  }
+}
+
 // Orgs API
 app.get('/api/orgs', async (req, res) => {
   try {
@@ -945,10 +1102,82 @@ app.get('/api/setup/stream', async (req, res) => {
       }
 
       // 2) Join this host to tailnet (required for success)
-      await runStep('Join tailnet', resolveScript('tailscale_join.sh'), [], {
-        ...(effectiveHsUrl ? { HEADSCALE_URL: effectiveHsUrl } : {}),
-        ...(joinKey ? { TS_AUTHKEY: joinKey } : {}),
-      })
+      const hostForJoin = TS_HOST || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
+      const ALLOW_INTERACTIVE =
+        process.env.SETUP_ALLOW_INTERACTIVE !== '0' && process.env.RUN_TAILSCALE_E2E !== '1'
+      let joined = false
+      // Try non-interactive first
+      const hasPwless = await isPasswordlessSudo()
+      if (process.platform === 'darwin') {
+        try {
+          send('step', { title: 'Join tailnet (non-interactive)' })
+          const svcOk = await ensureTailscaleService(false, (s) => send('log', s))
+          if (!svcOk) throw new Error('Tailscale service not reachable')
+          const args = [
+            'up',
+            `--login-server=${effectiveHsUrl}`,
+            `--authkey=${joinKey}`,
+            `--hostname=${hostForJoin}`,
+            '--accept-dns=false',
+            '--ssh=false',
+            '--reset',
+            '--force-reauth',
+          ]
+          const r = await runQuick('tailscale', args, { timeoutMs: 30000 })
+          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+          const ok = await pollTailscaleConnected(60000)
+          if (!ok) throw new Error('tailscale did not connect within timeout')
+          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+          joined = true
+        } catch (e: any) {
+          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+          send('log', String(e && e.message ? e.message : e))
+        }
+      } else if (hasPwless) {
+        try {
+          send('step', { title: 'Join tailnet (non-interactive)' })
+          const svcOk = await ensureTailscaleService(true, (s) => send('log', s))
+          if (!svcOk) throw new Error('Tailscale service not reachable')
+          const args = [
+            'tailscale',
+            'up',
+            `--login-server=${effectiveHsUrl}`,
+            `--authkey=${joinKey}`,
+            `--hostname=${hostForJoin}`,
+            '--accept-dns=false',
+            '--ssh',
+            '--reset',
+            '--force-reauth',
+          ]
+          const r = await runQuick('sudo', ['-n', ...args], { timeoutMs: 20000 })
+          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+          const ok = await pollTailscaleConnected(60000)
+          if (!ok) throw new Error('tailscale did not connect within timeout')
+          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+          joined = true
+        } catch (e: any) {
+          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+          send('log', String(e && e.message ? e.message : e))
+        }
+      }
+      if (!joined && ALLOW_INTERACTIVE) {
+        // Interactive: open a terminal and poll status
+        send('step', { title: 'Join tailnet (interactive)' })
+        await spawnInteractiveJoin(effectiveHsUrl, joinKey, hostForJoin, (line) =>
+          send('log', line)
+        )
+        const ok = await pollTailscaleConnected(180000)
+        if (!ok) {
+          send('stepError', { title: 'Join tailnet (interactive)', code: 1 })
+          throw new Error(
+            'tailscale did not connect; please check the Terminal window or try again'
+          )
+        }
+        send('stepDone', { title: 'Join tailnet (interactive)', code: 0 })
+      }
+      if (!joined && !ALLOW_INTERACTIVE) {
+        throw new Error('Interactive join disabled and non-interactive join failed')
+      }
       try {
         const db = await getDB()
         await db.run(
@@ -989,7 +1218,83 @@ app.get('/api/setup/stream', async (req, res) => {
       send('done', { ok: true })
     } else {
       // connect flow: join tailnet and start services; cluster must already exist
-      await runStep('Join tailnet', resolveScript('tailscale_join.sh'))
+      const hostForJoin = TS_HOST || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
+      const ALLOW_INTERACTIVE =
+        process.env.SETUP_ALLOW_INTERACTIVE !== '0' && process.env.RUN_TAILSCALE_E2E !== '1'
+      const hsUrl = HS_URL || ''
+      const key = TS_KEY || ''
+      let joined = false
+      const hasPwless = await isPasswordlessSudo()
+      if (process.platform === 'darwin' && hsUrl && key) {
+        try {
+          send('step', { title: 'Join tailnet (non-interactive)' })
+          const svcOk = await ensureTailscaleService(false, (s) => send('log', s))
+          if (!svcOk) throw new Error('Tailscale service not reachable')
+          const args = [
+            'up',
+            `--login-server=${hsUrl}`,
+            `--authkey=${key}`,
+            `--hostname=${hostForJoin}`,
+            '--accept-dns=false',
+            '--ssh=false',
+            '--reset',
+            '--force-reauth',
+          ]
+          const r = await runQuick('tailscale', args, { timeoutMs: 30000 })
+          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+          const ok = await pollTailscaleConnected(60000)
+          if (!ok) throw new Error('tailscale did not connect within timeout')
+          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+          joined = true
+        } catch (e: any) {
+          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+          send('log', String(e && e.message ? e.message : e))
+        }
+      } else if (hasPwless && hsUrl && key) {
+        try {
+          send('step', { title: 'Join tailnet (non-interactive)' })
+          const svcOk = await ensureTailscaleService(true, (s) => send('log', s))
+          if (!svcOk) throw new Error('Tailscale service not reachable')
+          const args = [
+            'tailscale',
+            'up',
+            `--login-server=${hsUrl}`,
+            `--authkey=${key}`,
+            `--hostname=${hostForJoin}`,
+            '--accept-dns=false',
+            '--ssh',
+            '--reset',
+            '--force-reauth',
+          ]
+          const r = await runQuick('sudo', ['-n', ...args], { timeoutMs: 20000 })
+          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+          const ok = await pollTailscaleConnected(60000)
+          if (!ok) throw new Error('tailscale did not connect within timeout')
+          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+          joined = true
+        } catch (e: any) {
+          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+          send('log', String(e && e.message ? e.message : e))
+        }
+      }
+      if (!joined && hsUrl && key && ALLOW_INTERACTIVE) {
+        send('step', { title: 'Join tailnet (interactive)' })
+        await spawnInteractiveJoin(hsUrl, key, hostForJoin, (line) => send('log', line))
+        const ok = await pollTailscaleConnected(180000)
+        if (!ok) {
+          send('stepError', { title: 'Join tailnet (interactive)', code: 1 })
+          throw new Error(
+            'tailscale did not connect; please check the Terminal window or try again'
+          )
+        }
+        send('stepDone', { title: 'Join tailnet (interactive)', code: 0 })
+      } else if (!joined) {
+        // Missing inputs for connect; handled by earlier validation usually
+        if (!hsUrl || !key)
+          throw new Error('Missing HEADSCALE_URL/TS_AUTHKEY/TS_HOSTNAME for connect flow')
+        if (!ALLOW_INTERACTIVE)
+          throw new Error('Interactive join disabled and non-interactive join failed')
+      }
       try {
         const db = await getDB()
         await db.run(

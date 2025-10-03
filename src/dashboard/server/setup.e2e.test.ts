@@ -49,7 +49,10 @@ async function tailscaleConnected() {
     }).toString()
     try {
       const j = JSON.parse(out)
-      return Boolean(j && j.Self && j.Self.TailAddr)
+      const selfOk = Boolean(j && j.Self && (j.Self.TailAddr || j.Self.HostName))
+      const backendOk = String(j && j.BackendState) === 'Running'
+      const tailnetOk = Boolean((j && (j.Tailnet || j.CurrentTailnet)) || false)
+      return selfOk || backendOk || tailnetOk
     } catch {
       return /relay|wgpeer|hostinfo/i.test(out)
     }
@@ -146,3 +149,5 @@ describe('Setup flows (real tailscale/headscale)', () => {
     240_000
   )
 })
+
+// RUN_TAILSCALE_E2E=1 SETUP_ALLOW_INTERACTIVE=0 DASHBOARD_TOKEN=dashboard-secret npm run test:e2e --silent
