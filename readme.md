@@ -94,8 +94,7 @@ rm -f ./state/dashboard.db
 
 
 ## Docs
-- Architecture: `assets/ARCHITECTURE.md`
-- Talos + Headscale runbook: `docs/talos-headscale-mode.md`
+- Architecture: `architecture.md`
 
 ## License
 See `LICENSE`.
