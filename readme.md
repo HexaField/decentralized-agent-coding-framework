@@ -52,6 +52,23 @@ docker network ls --format '{{.Name}}' | grep -E 'tailscale|headscale' | xargs -
 rm -rf ./src/_tmp/headscale
 rm -f ./state/dashboard.db
 
+Tailscale teardown (optional)
+
+```bash
+# macOS: sign out and quit the app
+tailscale logout || true
+osascript -e 'tell application "Tailscale" to quit' || true
+
+# Linux: disconnect and stop the service
+sudo tailscale down || true
+sudo tailscale logout || true
+sudo systemctl stop tailscaled 2>/dev/null || sudo service tailscaled stop 2>/dev/null || true
+
+# If you changed login servers and want to clear client prefs/state
+# (macOS usually does not need sudo; Linux typically does)
+tailscale up --reset --force-reauth 2>/dev/null || sudo tailscale up --reset --force-reauth 2>/dev/null || true
+```
+
 ## Current progress
 
 - Orchestrator image (Go)
