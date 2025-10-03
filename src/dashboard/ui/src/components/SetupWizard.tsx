@@ -2,7 +2,6 @@ import { Show, createSignal, onCleanup, onMount, JSX } from 'solid-js'
 
 type Props = {
   mode: 'create' | 'connect'
-  org?: string
   serverBase: string
   dashboardToken: string
   onDone: (ok: boolean) => void
@@ -58,7 +57,6 @@ export default function SetupWizard(props: Props): JSX.Element {
     if (hsSsh()) qs.set('HEADSCALE_SSH', hsSsh())
     if (tsKey()) qs.set('TS_AUTHKEY', tsKey())
     if (tsHost()) qs.set('TS_HOSTNAME', tsHost())
-    if (props.org) qs.set('org', props.org)
     es = new EventSource(`${props.serverBase}/api/setup/stream?${qs.toString()}`, {
       withCredentials: false,
     } as any)

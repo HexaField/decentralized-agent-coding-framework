@@ -453,7 +453,6 @@ export default function App() {
                         const names = [...orgs(), name]
                         setOrgs(names)
                         setOrg(name)
-                        setShowSetup('create')
                       }
                     } catch {}
                   }}
@@ -479,7 +478,6 @@ export default function App() {
               <Show when={!showOrgWizard() && !checking() && showSetup() !== 'none'}>
                 <SetupWizard
                   mode={showSetup() === 'create' ? 'create' : 'connect'}
-                  org={org()}
                   serverBase={SERVER_BASE}
                   dashboardToken={dashboardToken}
                   onDone={(ok) => {
