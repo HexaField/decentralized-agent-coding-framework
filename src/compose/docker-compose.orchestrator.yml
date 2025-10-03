@@ -30,7 +30,6 @@ services:
       ORCHESTRATOR_URL: http://mvp-orchestrator:8080
       ORCHESTRATOR_TOKEN: ${ORCHESTRATOR_TOKEN}
       UI_DEV: "0"
-      LOCAL_ENSURE: "0"
     volumes:
       - ../dashboard:/app
       - dashboard_node_modules:/app/node_modules
