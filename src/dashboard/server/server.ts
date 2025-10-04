@@ -1,4 +1,18 @@
 import 'dotenv/config'
+// Also try to load repo-root .env if running from src/dashboard (dev) and vars are missing
+try {
+  const hereFile = new URL(import.meta.url).pathname
+  // If server is under src/dashboard and ORCHESTRATOR_TOKEN isn't set, try loading ../../.env
+  if (!process.env.ORCHESTRATOR_TOKEN || !process.env.DASHBOARD_TOKEN) {
+    const pathMod = await import('path')
+    const fsMod = await import('fs')
+    const guessRoot = pathMod.resolve(pathMod.dirname(hereFile), '..', '..', '.env')
+    if (fsMod.existsSync(guessRoot)) {
+      const dotenv = await import('dotenv')
+      dotenv.config({ path: guessRoot })
+    }
+  }
+} catch {}
 import express from 'express'
 import path from 'path'
 import fs from 'fs'
@@ -14,10 +28,25 @@ app.use(express.json())
 
 const PORT = Number(process.env.PORT || 8090)
 const TOKEN = process.env.DASHBOARD_TOKEN || 'dashboard-secret'
-const ORCH_URL =
+function normalizeOrchUrl(raw: string): string {
+  try {
+    const u = new URL(raw)
+    if (u.hostname === '0.0.0.0') u.hostname = '127.0.0.1'
+    return u.toString().replace(/\/$/, '')
+  } catch {
+    return raw
+  }
+}
+const ORCH_URL = normalizeOrchUrl(
   process.env.ORCHESTRATOR_URL ||
-  (process.env.UI_DEV === '1' ? 'http://127.0.0.1:18080' : 'http://mvp-orchestrator:8080')
-const ORCH_TOKEN = process.env.ORCHESTRATOR_TOKEN || process.env.DASHBOARD_TOKEN || ''
+    (process.env.UI_DEV === '1' ? 'http://127.0.0.1:18080' : 'http://mvp-orchestrator:8080')
+)
+// Prefer explicit orchestrator token; fall back to a few common env names; do NOT assume dashboard token matches
+const ORCH_TOKEN =
+  process.env.ORCHESTRATOR_TOKEN ||
+  process.env.ORCH_TOKEN ||
+  process.env.ORCHESTRATOR_API_TOKEN ||
+  ''
 const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: true })
 // Optional auth header for agent fallback HTTP server; harmless for code-server
 const CS_AUTH_HEADER = process.env.CODE_SERVER_AUTH_HEADER || 'X-Agent-Auth'
@@ -635,7 +664,12 @@ app.post('/api/orgs/:name/bootstrap', async (req, res) => {
     return res.json(out)
   } catch (e: any) {
     const msg = e?.message ? String(e.message) : String(e)
-    return res.status(502).json({ ok: false, error: msg || 'orchestrator bootstrap failed' })
+    // Try to surface upstream status code (e.g., 401) instead of always 502
+    let code = 502
+    let m = msg && msg.match(/\b(\d{3})\b/)
+    if (!m) m = msg && msg.match(/HTTP\/?\d\.\d\s+(\d{3})/) // rare
+    if (m) code = Math.max(400, Math.min(599, Number(m[1])))
+    return res.status(code).json({ ok: false, error: msg || 'orchestrator bootstrap failed' })
   }
 })
 // removed unused agentChats
