@@ -30,18 +30,13 @@ dash-dev:
 	@docker compose -f compose/docker-compose.orchestrator.yml up dashboard
 
 test-local:
-	@./scripts/create_org_cluster.sh acme
 	@./scripts/start_orchestrator.sh
 	@./scripts/seed_demo_project.sh
-	@./scripts/deploy_agent.sh acme "Hello from test:local"
-	@echo "Check dashboard for PR and task updates."
+	@echo "CRD mode: open dashboard and send a chat to schedule a task for org 'acme'. The Operator will deploy the agent."
 
 test-multi:
-	@./scripts/create_org_cluster.sh acme
-	@./scripts/create_org_cluster.sh devrel
 	@./scripts/start_orchestrator.sh
-	@./scripts/deploy_agent.sh devrel "Remote placement test"
-	@echo "Ensure peers configured in orchestrator example config."
+	@echo "CRD mode: schedule tasks via dashboard chat; ensure peers configured in orchestrator example config."
 
 # Go build and tests (orchestrator)
 go-build:
@@ -51,8 +46,6 @@ test:
 	@cd orchestrator/app && go test ./...
 
 clean:
-	@./scripts/delete_org_cluster.sh acme || true
-	@./scripts/delete_org_cluster.sh devrel || true
 	@docker compose -f compose/docker-compose.orchestrator.yml down || true
 
 help:

@@ -13,6 +13,7 @@ export default function SetupWizard(props: Props): JSX.Element {
   const [running, setRunning] = createSignal(false)
   const [tab, setTab] = createSignal<'join' | 'create'>(props.mode === 'create' ? 'create' : 'join')
   const [result, setResult] = createSignal<null | { ok: boolean; message: string }>(null)
+  const [nsMsg, setNsMsg] = createSignal('')
   const [hsUrl, setHsUrl] = createSignal('')
   const [hsSsh, setHsSsh] = createSignal('')
   const [tsKey, setTsKey] = createSignal('')
@@ -75,11 +76,26 @@ export default function SetupWizard(props: Props): JSX.Element {
     es.addEventListener('error', (e) => {
       setLines((prev) => [...prev, `[error] stream error`])
     })
-    es.addEventListener('done', (e) => {
+    es.addEventListener('done', async (e) => {
       try {
         const ok = Boolean(JSON.parse((e as MessageEvent).data).ok)
         setResult({ ok, message: ok ? 'Success! This device is connected.' : 'Setup failed.' })
         props.onDone(ok)
+        if (ok) {
+          // Best-effort namespace prepare for all orgs in DB
+          try {
+            setNsMsg('preparing default namespace…')
+            const r = await fetch(`${props.serverBase}/api/k8s/prepare`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Auth-Token': props.dashboardToken },
+              body: JSON.stringify({}),
+            }).then((x) => x.json())
+            if (r && !r.error) setNsMsg(`namespace ready: ${r.namespace || 'mvp-agents'}`)
+            else setNsMsg('namespace prepare failed')
+          } catch {
+            setNsMsg('namespace prepare failed')
+          }
+        }
       } catch {
         setResult({ ok: false, message: 'Setup failed.' })
         props.onDone(false)
@@ -122,8 +138,8 @@ export default function SetupWizard(props: Props): JSX.Element {
       <div class="text-xs opacity-70 mb-2">
         <Show when={tab() === 'join'}>Required: Headscale URL, TS Auth Key, TS Hostname.</Show>
         <Show when={tab() === 'create'}>
-          Required: TS Hostname and one of: Headscale URL (external), Headscale SSH (external
-          bootstrap), or TS Auth Key (join after local bootstrap). No .env files are used here.
+          Required: TS Hostname. Headscale URL and TS Auth Key are optional — if left blank, the
+          server will start a local Headscale and generate a reusable auth key automatically.
         </Show>
       </div>
       <div class="grid gap-3 grid-cols-1 md:grid-cols-2 mb-3">
@@ -199,6 +215,9 @@ export default function SetupWizard(props: Props): JSX.Element {
           </button>
         </Show>
       </div>
+      <Show when={nsMsg()}>
+        <div class="mt-3 text-xs opacity-70">{nsMsg()}</div>
+      </Show>
       <Show when={result()}>
         <div class="mt-4 p-3 border rounded">
           <div class={`font-semibold ${result()!.ok ? 'text-green-700' : 'text-red-700'}`}>

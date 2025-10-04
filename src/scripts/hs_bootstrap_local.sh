@@ -16,8 +16,18 @@ export HEADSCALE_URL="http://${HEADSCALE_BIND_IP}:${HEADSCALE_PORT}"
 
 echo "Starting local Headscale on ${HEADSCALE_BIND_IP}:${HEADSCALE_PORT}..."
 docker rm -f headscale-local >/dev/null 2>&1 || true
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONF_DIR="${ROOT_DIR}/_tmp/headscale"
+HOME_DIR="${HOME:-/root}"
+# Determine state dir (dev vs prod)
+if [[ -n "${GUILDNET_STATE_DIR:-}" ]]; then
+  STATE_DIR="$GUILDNET_STATE_DIR"
+elif [[ -n "${GUILDNET_HOME:-}" ]]; then
+  STATE_DIR="$GUILDNET_HOME/state"
+elif [[ "${GUILDNET_ENV:-}" == "dev" ]]; then
+  STATE_DIR="${HOME_DIR}/.guildnetdev/state"
+else
+  STATE_DIR="${HOME_DIR}/.guildnet/state"
+fi
+CONF_DIR="${STATE_DIR}/_tmp/headscale"
 mkdir -p "${CONF_DIR}"
 cat > "${CONF_DIR}/config.yaml" <<YAML
 server_url: ${HEADSCALE_URL}
@@ -86,3 +96,6 @@ fi
 # Note: Headscale CLI readiness is validated by the dashboard service with retries to avoid long blocking here.
 
 echo "Local Headscale bootstrap complete at ${HEADSCALE_URL}"
+
+# Persist discovered URL for dashboard server auto-discovery
+echo -n "${HEADSCALE_URL}" > "${CONF_DIR}/url" || true
