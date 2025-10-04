@@ -27,7 +27,8 @@
 			"presentation": {
 				"reveal": "always",
 				"panel": "dedicated"
-			}
+			},
+			"problemMatcher": []
 		},
 		{
 			"label": "CI: Build/test orchestrator and dashboard",
@@ -242,6 +243,196 @@
 			"args": [
 				"-lc",
 				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && DASHBOARD_URL_TEST=https://127.0.0.1:8090 DASHBOARD_TOKEN=dashboard-secret RUN_TAILSCALE_E2E=1 TEST_FAST_SETUP=1 npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - smoke",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - quick retry",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - quick retry 2",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - verify alignment",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Framework rebuild and up",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"bash src/scripts/start_orchestrator.sh rebuild && bash src/scripts/start_orchestrator.sh up"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Wait for health endpoints",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"set -e; for i in {1..60}; do curl -skf https://127.0.0.1:8443/api/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && echo ok && exit 0; sleep 2; done; echo fail; exit 1"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests now",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests after restart",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Restart dashboard and rerun tests",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"docker compose -f src/compose/docker-compose.orchestrator.yml restart dashboard && sleep 2 && cd src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (verify preauth flag detection)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Re-run dashboard tests after headscale bootstrap fix",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Wait for services to be healthy",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"set -e; echo 'Waiting for dashboard(:8443) and orchestrator(:18080)...'; for i in {1..90}; do curl -skf https://127.0.0.1:8443/api/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && echo 'Services healthy' && exit 0; sleep 2; done; echo 'Services not healthy in time'; exit 1"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Restart dashboard container to pick up server changes",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src && docker compose -f compose/docker-compose.orchestrator.yml restart dashboard && sleep 2 && docker compose -f compose/docker-compose.orchestrator.yml logs -n 20 dashboard | sed -e 's/tskey-[A-Za-z0-9_-]\\+/tskey-REDACTED/g'"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run dashboard tests after users-ID fix",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests after fallback improvements",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Re-run dashboard tests with improved key parsing",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests final attempt",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests to view new preauth debug log",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - final",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
 			],
 			"group": "test"
 		}

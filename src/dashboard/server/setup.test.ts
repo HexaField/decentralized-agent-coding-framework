@@ -102,7 +102,7 @@ suite('Setup flows (real tailscale/headscale): MUST succeed when properly config
     const host = TS_HOSTNAME
     if (!hs || !key) return
 
-  const qs = new URLSearchParams({ flow: 'connect', mode: 'auto', token: DASHBOARD_TOKEN })
+    const qs = new URLSearchParams({ flow: 'connect', mode: 'auto', token: DASHBOARD_TOKEN })
     if (hs) qs.set('HEADSCALE_URL', hs)
     if (key) qs.set('TS_AUTHKEY', key)
     if (host) qs.set('TS_HOSTNAME', host)
@@ -188,7 +188,7 @@ suite('Setup flows (real tailscale/headscale): MUST succeed when properly config
       })
       expect(r.ok).toBe(true)
     }
-  const qs = new URLSearchParams({ flow: 'create', mode: 'external', token: DASHBOARD_TOKEN })
+    const qs = new URLSearchParams({ flow: 'create', mode: 'auto', token: DASHBOARD_TOKEN })
     if (HEADSCALE_URL) qs.set('HEADSCALE_URL', HEADSCALE_URL)
     if (TS_AUTHKEY) qs.set('TS_AUTHKEY', TS_AUTHKEY)
     qs.set('TS_HOSTNAME', host)

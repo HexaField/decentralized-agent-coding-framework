@@ -96,3 +96,6 @@ fi
 # Note: Headscale CLI readiness is validated by the dashboard service with retries to avoid long blocking here.
 
 echo "Local Headscale bootstrap complete at ${HEADSCALE_URL}"
+
+# Persist discovered URL for dashboard server auto-discovery
+echo -n "${HEADSCALE_URL}" > "${CONF_DIR}/url" || true
