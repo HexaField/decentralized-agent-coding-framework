@@ -1,27 +1,32 @@
 # Architecture Overview
 
-This document captures the current architecture at a high level: the core components, how they interact, and the main request/flow traces. It reflects the CRD/operator-only design that is implemented in this repo today.
+Updated: 2025-10-04
+
+This document captures the current architecture at a high level: the core components, how they interact, and the main request/flow traces. It reflects the current distributed-only design (no local/stub modes). The Dashboard drives setup and orchestration, the Orchestrator manages scheduling and cluster interactions, and per-org clusters run Agents managed through a Kubernetes Operator and CRD.
 
 ## System context
 
-- Orchestrator (Go)
-  - Lightweight control plane with a REST API.
-  - Tracks tasks and agents in memory (MVP) and submits AgentTask Custom Resources to org clusters.
-  - No imperative/script deployments; the Operator owns reconciliation.
 - Dashboard (Node/Express + SPA)
-  - Web UI for operators and a minimal server for health/state and commands.
-  - Proxies/sends scheduling requests to the Orchestrator.
+  - Web UI and minimal API server (TypeScript/Express, HTTPS in dev).
+  - Handles initial setup via Server-Sent Events (SSE) at `/api/setup/stream` for connect/create flows.
+  - Proxies orchestration calls and embeds editor access via reverse proxies.
+- Orchestrator (Go)
+  - Lightweight control plane with a REST API and health endpoint.
+  - Tracks tasks/agents in memory (MVP) and can submit AgentTask Custom Resources to org clusters (CRD path).
+  - Provides helper endpoints for editor port-forwarding and cluster interactions.
 - Agent (Go + code-server)
   - Runs inside each organization’s Kubernetes cluster.
   - Created and managed by the Operator in response to AgentTask CRs.
-  - Pulls context, executes work, and exposes an editor (code-server) on port 8443.
-  - Emits artifacts (e.g., last_pr.json) into a shared state path.
+  - Pulls context, executes work, emits artifacts, and exposes code-server on port 8443.
+- Operator + CRD (Kubernetes)
+  - AgentTask CRD models a unit of agent work; an Operator reconciles CRs into Deployments/Services.
+  - Deployed per org cluster; operator manifests and wiring exist in this repo.
 - Mesh (Headscale/Tailscale)
-  - Provides secure peer-to-peer connectivity between local/dev services and cluster-resident agents.
-  - Uses a local Headscale controller and the Tailscale Operator for K8s when applicable.
+  - Secure overlay network between local/dev services and cluster agents.
+  - Local Headscale controller supported; tailscale CLI used for device join. Tailscale Operator is optional.
 - Clusters (Talos per organization)
-  - Each org has its own Talos-managed Kubernetes cluster.
-  - Agents are deployed on a per-org basis.
+  - Each org has a Talos-managed Kubernetes cluster.
+  - Kubeconfig and talosconfig are generated/written under the shared state directory per org.
 
 ## Component diagram
 
@@ -32,25 +37,55 @@ graph TD
 
   subgraph Mesh["Headscale/Tailscale Mesh"]
     subgraph OrgCluster["Org Cluster (Talos per org)"]
+      OP["Agent Operator (controller)"]
+      AT["AgentTask (CRD)"]
       A["Agent Pod (Go)"]
       CS["code-server :8443"]
-      ST["~/.guildnet/state (last_pr.json)"]
+      ST["~/.guildnet/state (artifacts)"]
       A --> CS
       A --> ST
-      AT["AgentTask (CRD)"]
+      AT -->|reconcile| OP
+      OP -->|create Deployment/Service| A
     end
   end
 
+  D -->|"SSE: /api/setup/stream (connect/create)"| D
   D -->|"POST /schedule {org, task}"| O
   O -->|"create AgentTask CR"| AT
-  AT -->|"reconciles"| A
 
   %% Mesh-secured connectivity for interactive/editor access
   D -. P2P via mesh .- A
   O -. P2P via mesh .- A
+
+  %% Editor embedding via orchestrator port-forward reverse-proxy
+  D -->|"/agents/editor/open -> /embed/orchestrator/:port"| O
 ```
 
-## Detailed flow (sequence) diagram
+## Detailed flows (sequence diagrams)
+
+### Tailnet setup: connect vs create
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Dashboard UI
+    participant D as Dashboard Server
+    participant HS as Headscale/Tailscale
+
+    Note over UI,D: Tailnet setup (connect or create)
+    UI->>D: GET /api/setup/stream?flow=connect|create (SSE)
+    alt flow=create (bootstrap local Headscale)
+      D->>HS: Start local Headscale container and create preauth key
+      D-->>UI: SSE logs and final TS_AUTHKEY details
+    else flow=connect (use existing Headscale)
+      UI->>D: Provide HEADSCALE_URL, TS_AUTHKEY, TS_HOSTNAME
+    end
+    D->>HS: tailscale up (non-interactive)
+    HS-->>D: device joined to tailnet
+    D-->>UI: SSE event {ok: true, step: "connect"}
+```
+
+### Cluster bootstrap (per org)
 
 ```mermaid
 sequenceDiagram
@@ -59,124 +94,158 @@ sequenceDiagram
     participant D as Dashboard Server
     participant O as Orchestrator
     participant K as Org K8s API (Talos)
-    participant OP as Agent Operator (controller)
-    participant AP as Agent Pod (code-server)
-    participant HS as Headscale/Tailscale
 
-    Note over UI,D: Tailnet setup (create or connect)
-    UI->>D: /api/setup/stream (flow=create|connect)
-    alt create (local Headscale)
-      D->>HS: Bootstrap Headscale (container) and generate TS_AUTHKEY
-    else connect (existing Headscale)
-      UI->>D: Provide HEADSCALE_URL, TS_AUTHKEY, TS_HOSTNAME
+    UI->>D: Create org (SQLite) and/or upload/generate talosconfig/kubeconfig
+    opt bootstrap via orchestrator
+      D->>O: POST /orgs/:name/bootstrap {cpNodes, workerNodes}
+      O->>O: talosctl gen/apply/bootstrap
+      O-->>D: kubeconfig saved under state/kube/<org>.config
     end
-    D->>HS: tailscale up (non-interactive, fallback interactive)
-    HS-->>D: device joined to tailnet
-
-  Note over D,O: Cluster bootstrap (optional)
-    UI->>D: Create org (SQLite), upload/generate talosconfig/kubeconfig
-    D->>O: POST /orgs/bootstrap {org, cpNodes, workerNodes}
-    O->>O: talosctl gen/apply/bootstrap & write kubeconfig to state
-    O-->>D: kubeconfig path (~/.guildnet/state/kube/<org>.config)
-
-  Note over K,OP: Install CRD/operator in ns=mvp-agents
     D->>K: Apply CRD + SA/Role/RoleBinding + Operator Deployment
-    K->>OP: Start controller manager
+    K-->>D: Operator running
+```
 
-  Note over D,O: Schedule and reconcile a task
+### Schedule and reconcile a task (CRD path)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Dashboard UI
+    participant D as Dashboard Server
+    participant O as Orchestrator
+    participant K as Org K8s API
+    participant OP as Agent Operator
+    participant AP as Agent Pod
+
     UI->>D: Chat/schedule request
     D->>O: POST /schedule {org, task}
-    O->>K: Create AgentTask (CRD) in ns=mvp-agents
+    O->>K: Create AgentTask (CRD)
     K->>OP: Reconcile AgentTask
-    OP->>K: Create Secret (env), Deployment, Service (:8443)
+    OP->>K: Create Secret, Deployment, Service (:8443)
     K-->>OP: Deployment Available
-    OP->>K: Update AgentTask.status (phase=Running, agentName)
-
-  Note over AP,O: Agent registration + logs
-    AP->>O: register, heartbeat, claim task, logs
-  Note over O,D: Orchestrator streams state to Dashboard
-    O-->>D: /tasks, /agents, SSE streams
-
-  Note over D,O: Editor access
-    opt via orchestrator port-forward
-      D->>O: /agents/editor/open (ensure kubectl port-forward)
-      D->>O: /embed/orchestrator/:port (reverse proxy)
-    end
-    opt via Tailscale Operator (future)
-      OP->>K: Expose Service on tailnet (TS proxy)
-      UI->>AP: Access code-server over tailnet
-    end
+    OP->>K: Update AgentTask.status
+    AP->>O: register/heartbeat/logs
+    O-->>D: task/agent state; editor port-forward helpers
+    D->>O: /agents/editor/open; D<->O: /embed/orchestrator/:port (reverse proxy)
 ```
 
 ## Request/flow traces
 
 - Health checks
-  - Orchestrator exposes GET /health
-  - Dashboard exposes GET /api/health
+  - Orchestrator: `GET /health`
+  - Dashboard: `GET /api/health`
+- Setup (SSE)
+  - `GET /api/setup/stream?flow=connect|create` streams step logs/events.
+  - Connect flow: joins tailnet using provided `HEADSCALE_URL`, `TS_AUTHKEY`, `TS_HOSTNAME`.
+  - Create flow: can bootstrap local Headscale and generate an auth key (optional, environment-dependent).
+- Bootstrap org cluster (optional via Orchestrator)
+  - `POST /orgs/:name/bootstrap { cpNodes, workerNodes }` performs Talos gen/apply/bootstrap and writes kubeconfig under state.
 - Schedule task (CRD path)
-  - Dashboard sends schedule request to Orchestrator (POST /schedule with { org, task })
-  - Orchestrator accepts, records task in memory, and creates an AgentTask CR in the org cluster
-  - The Operator reconciles the CR: creates Secret/Deployment/Service for the Agent and sets status/conditions
-- Agent lifecycle
-  - Agent pod starts in the org cluster
-  - Agent pulls context and runs task-specific logic
-  - Agent exposes code-server on :8443 for live editing
-  - Agent writes artifacts to ~/.guildnet/state (e.g., last_pr.json)
-- Artifacts surfacing
-  - Dashboard surfaces agent artifacts and status where available
+  - Dashboard sends schedule request to Orchestrator: `POST /schedule { org, task }`.
+  - Orchestrator creates an AgentTask CR in the org cluster; Operator reconciles into Secret/Deployment/Service and updates status.
+- Editor access
+  - Dashboard calls Orchestrator to ensure a kubectl port-forward; Dashboard reverse-proxies `/embed/orchestrator/:port/*` for in-browser code-server.
 
 ## Data and configuration
 
 - Organizations
   - Orgs are managed by the Dashboard (SQLite) and associated configs (Talos/kube) live under the shared state dir.
-  - A repo-local `orgs.yaml` may exist for examples or scripts, but it is not required at runtime.
-  - Generated kubeconfigs are written under `~/.guildnet/state/kube/<org>.config` for internal use by Dashboard/Orchestrator.
+  - Generated kubeconfigs: `~/.guildnet/state/kube/<org>.config`
+  - Generated talosconfigs: `~/.guildnet/state/talos/<org>.talosconfig`
 - Orchestrator
-  - Orchestrator configs live under `src/orchestrator/configs` and the container includes `talosctl` and `kubectl`.
-  - Agents read env from the Operator-provisioned Secret (includes `ORCHESTRATOR_URL`, `ORCHESTRATOR_TOKEN`, etc.).
+  - Configs under `src/orchestrator/configs`; images include `talosctl` and `kubectl`.
+  - Agents receive env via Operator-provisioned Secret (`ORCHESTRATOR_URL`, `ORCHESTRATOR_TOKEN`, etc.).
 - Dashboard
-  - Certs for local TLS in src/dashboard/certs (used for dev/test)
-  - Minimal state under ~/.guildnet/state (e.g., dashboard.db, kube/talos configs)
+  - Dev TLS certs under `src/dashboard/certs`.
+  - Database: `~/.guildnet/state/dashboard.db`.
 - Agent
-  - Writes state/artifacts under ~/.guildnet/state inside the environment
-  - Exposes code-server on port 8443 via a Service; the Orchestrator can port-forward for browser access
+  - Writes artifacts under `~/.guildnet/state` and serves code-server on 8443.
 
 ### State directories and environment
 
-- Base state dir resolution (effective for both Dashboard and Orchestrator):
+- Base state dir resolution (for both Dashboard and Orchestrator):
   - If `GUILDNET_STATE_DIR` is set, use it.
   - Else if `GUILDNET_HOME` is set, use `${GUILDNET_HOME}/state`.
   - Else if `GUILDNET_ENV=dev`, default to `~/.guildnetdev/state`; otherwise `~/.guildnet/state`.
-- Kubeconfigs per org: `${state}/kube/<org>.config`
-- Talos configs per org: `${state}/talos/<org>.talosconfig`
-- Dashboard DB: `${state}/dashboard.db`
+  - Dashboard DB: `${state}/dashboard.db`
+  - Kubeconfigs per org: `${state}/kube/<org>.config`
+  - Talos configs per org: `${state}/talos/<org>.talosconfig`
 
 ## Networking and security
 
 - Mesh
-  - Headscale (local) and Tailscale provide secure overlay networking
-  - Tailscale Operator can expose in-cluster services via Tailscale
-- Editor access
-  - Agent’s code-server runs on port 8443 inside the cluster.
-  - Today: Dashboard asks Orchestrator to open a kubectl port-forward and reverse-proxies `/embed/orchestrator/:port` for in-browser access.
-  - Future: Tailscale Operator can expose the Service directly onto the tailnet for cross-device access without port-forwarding.
+  - Headscale (local) and Tailscale provide secure overlay networking.
+  - Optional Tailscale Operator to expose in-cluster Services on the tailnet.
+- SSE and reverse proxies
+  - Setup uses SSE over `GET /api/setup/stream`.
+  - Bootstrap proxy fix: Dashboard forwards upstream status codes (no more masked 502s).
+  - Editor embedding via Orchestrator port-forward is proxied under `/embed/orchestrator/:port/*`.
 - Certificates
-  - The Dashboard’s dev server can use self-signed certs from src/dashboard/certs
+  - The Dashboard dev server uses self-signed certs under `src/dashboard/certs`.
 - AuthZ/AuthN
-  - Token-based auth between Dashboard and Orchestrator; RBAC within clusters via Operator service account
-  - Agents need a reachable `ORCHESTRATOR_URL` (ideally the host’s Tailscale IP/port via `PUBLIC_ORCHESTRATOR_URL`) to call back from the cluster.
+  - Token-based auth between Dashboard and Orchestrator; RBAC within clusters via Operator service account.
+  - Agents need a reachable `ORCHESTRATOR_URL` (ideally a tailscale-reachable `PUBLIC_ORCHESTRATOR_URL`).
 
-## What’s in place vs. what’s next
+## Testing and developer experience
 
-- In place
-  - Orchestrator REST API and in-memory task/agent tracking
-  - Dashboard UI + minimal API, end-to-end scheduling via Orchestrator
-  - CRD/operator flow: AgentTask CRD and per-cluster Operator manage agents
-  - Agent stubs, context pulling stubs, and code-server on :8443
-  - Headscale/Tailscale integration scripts and Talos bootstrap scripts
-- Next
-  - Package and install the Agent Operator per cluster (image build + kustomize/helm install automation)
-  - Ensure agent images are available to clusters (registry push or node preload; imagePullSecrets if private)
-  - Set and validate `PUBLIC_ORCHESTRATOR_URL` so agents can reach the orchestrator over the tailnet
-  - Optional: adopt Tailscale Operator to expose agent Services on the tailnet (no port-forward)
-  - Persist tasks/agents and artifacts beyond in-memory; improve Dashboard surfacing (PRs, logs, status)
+- Unit/E2E tests live under `src/dashboard/server/*.test.ts` and are gated by environment variables for network-heavy tests.
+- SSE setup tests can target a running Dashboard via `DASHBOARD_URL_TEST`; tailscale/headscale tests are gated by `RUN_TAILSCALE_E2E`.
+- Fast mode has been removed; tests run the non-fast path.
+- VS Code tasks provided to build/test Orchestrator and Dashboard.
+
+## Status checklist: what works and what’s next
+
+The following reflects the current state validated as of 2025-10-04.
+
+### Works today
+
+- Build and health
+  - Orchestrator builds and passes unit tests; health endpoint responds OK.
+  - Dashboard server runs in dev (HTTPS) and responds OK on `/api/health`.
+- Setup and mesh
+  - SSE `/api/setup/stream` supports GET; connect flow successfully joins tailnet with provided `HEADSCALE_URL`/`TS_AUTHKEY`/`TS_HOSTNAME`.
+  - Local Headscale helper can bootstrap and generate a preauth key (create flow), environment-dependent.
+- Org configs
+  - Per-org talosconfig and kubeconfig generation/writing under the shared state directory.
+  - `GET /api/orgs` lists orgs from SQLite; create/delete org endpoints wired.
+- Scheduling (CRD path)
+  - `POST /schedule { org, task }` from Dashboard to Orchestrator creates AgentTask CR (manifests present).
+  - Operator manifests are applied by Dashboard; basic wiring in place for reconciliation.
+- Editor access
+  - Orchestrator can open kubectl port-forwards; Dashboard proxies `/embed/orchestrator/:port/*` to reach in-cluster code-server on 8443.
+- Proxy correctness
+  - Org bootstrap proxy forwards upstream 4xx/5xx verbatim (no masked 502); unit tests cover this.
+
+### Known gaps and next steps
+
+- Create flow prerequisites
+  - Current create flow expects discoverable control-plane nodes; when none are found, bootstrap fails. Next: allow explicit CP_NODES/WORKER_NODES input via UI/API and/or improve discovery via tailscale.
+- Operator and images
+  - Build/publish Operator and Agent images to a registry; wire imagePullSecrets if private; ensure clusters can pull images.
+- Headscale automation in UI
+  - Optional: manage tailnets and preauth keys from the Dashboard to remove manual steps.
+- Public orchestrator URL
+  - Standardize `PUBLIC_ORCHESTRATOR_URL` advertisement on the tailnet for Agents to call back reliably.
+- Persistence and surfacing
+  - Persist tasks/agents/logs beyond in-memory; surface artifacts (e.g., PR metadata) and logs in the Dashboard.
+- Observability and UX
+  - Stream logs/events for tasks; improve error messaging in SSE and API responses; add progress indicators in UI.
+- Security hardening
+  - Token management/rotation, TLS for inter-service calls where applicable, and refined cluster RBAC.
+- E2E coverage
+  - Expand integration tests for create flow (with real CP/WK nodes), operator reconciliation, and editor access over tailscale.
+
+### Nice-to-haves (future)
+
+- Adopt Tailscale Operator to expose Services directly on the tailnet (remove port-forward dependency).
+- Multi-org dashboards, quotas, and org isolation helpers.
+- Pluggable task types, artifacts browser, and richer agent telemetry.
+
+## Glossary
+
+- Dashboard: UI + Express server in `src/dashboard`.
+- Orchestrator: Go service in `src/orchestrator/app`.
+- Agent: Work-executing pod with code-server, managed per org.
+- Operator: Kubernetes controller that reconciles AgentTask CRs.
+- AgentTask (CRD): Custom resource representing a schedulable agent task.
+- Headscale/Tailscale: Mesh networking components for secure connectivity.
