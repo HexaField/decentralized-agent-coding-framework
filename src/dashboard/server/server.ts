@@ -312,7 +312,7 @@ proxy.on('proxyRes', (proxyRes, req: any, res) => {
     }
   } catch {}
 })
-app.post('/api/setup/stream', async (req, res) => {
+async function setupStream(req: any, res: any) {
   // Require dashboard token; allow via header or query param (EventSource can't set headers)
   const qtok = (req.query && (req.query as any).token) || ''
   const presented = (req.headers['x-auth-token'] as string) || String(qtok || '')
@@ -327,6 +327,7 @@ app.post('/api/setup/stream', async (req, res) => {
   const HS_URL = String((req.query as any).HEADSCALE_URL || '')
   const TS_KEY = String((req.query as any).TS_AUTHKEY || '')
   const TS_HOST = String((req.query as any).TS_HOSTNAME || '')
+  // Fast mode removed: always run full steps
 
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -457,7 +458,7 @@ app.post('/api/setup/stream', async (req, res) => {
       )
     } catch {}
 
-    if (flow === 'create' && process.env.TEST_FAST_SETUP !== '1') {
+  if (flow === 'create') {
       // 2) Per-org steps: discover nodes via Tailscale and bootstrap with Talos
       const orgs: string[] = []
       if (orgParam) orgs.push(orgParam)
@@ -520,9 +521,7 @@ app.post('/api/setup/stream', async (req, res) => {
       }
       await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
     } else if (flow === 'connect') {
-      if (process.env.TEST_FAST_SETUP !== '1') {
-        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
-      }
+      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
     }
 
     send('done', { ok: true })
@@ -532,7 +531,9 @@ app.post('/api/setup/stream', async (req, res) => {
   } finally {
     res.end()
   }
-})
+}
+app.get('/api/setup/stream', setupStream)
+app.post('/api/setup/stream', setupStream)
 app.post('/api/orgs', async (req, res) => {
   if ((req.headers['x-auth-token'] as string) !== TOKEN)
     return res.status(401).json({ ok: false, error: 'unauthorized' })
@@ -559,6 +560,16 @@ app.delete('/api/orgs/:id', async (req, res) => {
     const db = await getDB()
     await db.run('DELETE FROM orgs WHERE id=?', id)
     res.json({ ok: true })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+// List orgs
+app.get('/api/orgs', async (_req, res) => {
+  try {
+    const db = await getDB()
+    const rows = await db.all('SELECT id, name, created_at FROM orgs ORDER BY id DESC')
+    res.json({ ok: true, orgs: rows })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
   }
@@ -1353,228 +1364,6 @@ app.post('/api/debug/orchestrator-url', (req, res) => {
   }
 })
 
-// Setup automation: stream steps (distributed-only)
-app.get('/api/setup/stream', async (req, res) => {
-  // Require dashboard token; allow via header or query param (EventSource can't set headers)
-  const qtok = (req.query && (req.query as any).token) || ''
-  const presented = (req.headers['x-auth-token'] as string) || String(qtok || '')
-  if (presented !== TOKEN) {
-    res.status(401).end('unauthorized')
-    return
-  }
-
-  const flow = String(req.query.flow || 'connect') // 'create' | 'connect'
-  const orgParam = String(req.query.org || '') // optional single org name
-  // Distributed-only: require external Headscale and TS key/hostname
-  const HS_URL = String((req.query as any).HEADSCALE_URL || '')
-  const TS_KEY = String((req.query as any).TS_AUTHKEY || '')
-  const TS_HOST = String((req.query as any).TS_HOSTNAME || '')
-
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  const send = (event: string, data: any) => {
-    res.write(`event: ${event}\n`)
-    res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`)
-  }
-
-  const here = path.dirname(new URL(import.meta.url).pathname)
-  const srcDir = path.resolve(here, '..', '..')
-  const resolveScript = (name: string) => path.resolve(srcDir, 'scripts', name)
-  const runStep = (
-    title: string,
-    file: string,
-    args: string[] = [],
-    envOverride: Record<string, string> = {}
-  ) =>
-    new Promise<void>((resolve, reject) => {
-      send('step', { title, file, args })
-      const childEnv: NodeJS.ProcessEnv = { ...process.env, ...envOverride }
-      const proc = spawn('bash', [file, ...args], { cwd: srcDir, env: childEnv })
-      proc.stdout.on('data', (d) => send('log', String(d)))
-      proc.stderr.on('data', (d) => send('log', String(d)))
-      proc.on('close', (code) => {
-        if (code === 0) {
-          send('stepDone', { title, code })
-          resolve()
-        } else {
-          send('stepError', { title, code })
-          reject(new Error(`${title} failed: ${code}`))
-        }
-      })
-    })
-
-  try {
-    send('begin', { flow, mode: 'external', org: orgParam || undefined })
-
-    // Inputs are mandatory for both flows in distributed mode
-    const missing: string[] = []
-    if (!HS_URL) missing.push('HEADSCALE_URL')
-    if (!TS_KEY) missing.push('TS_AUTHKEY')
-    if (!TS_HOST) missing.push('TS_HOSTNAME')
-    if (missing.length) {
-      send('error', `Missing required inputs: ${missing.join(', ')}`)
-      send('done', { ok: false })
-      return res.end()
-    }
-
-    // 1) Join this host to tailnet
-    const hostForJoin = TS_HOST || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
-    const ALLOW_INTERACTIVE =
-      process.env.SETUP_ALLOW_INTERACTIVE !== '0' && process.env.RUN_TAILSCALE_E2E !== '1'
-    let joined = false
-    const hasPwless = await isPasswordlessSudo()
-    if (process.platform === 'darwin') {
-      try {
-        send('step', { title: 'Join tailnet (non-interactive)' })
-        const svcOk = await ensureTailscaleService(false, (s) => send('log', s))
-        if (!svcOk) throw new Error('Tailscale service not reachable')
-        const args = [
-          'up',
-          `--login-server=${HS_URL}`,
-          `--authkey=${TS_KEY}`,
-          `--hostname=${hostForJoin}`,
-          '--accept-dns=false',
-          '--ssh=false',
-          '--reset',
-          '--force-reauth',
-        ]
-        const r = await runQuick('tailscale', args, { timeoutMs: 30000 })
-        if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
-        const ok = await pollTailscaleConnected(60000)
-        if (!ok) throw new Error('tailscale did not connect within timeout')
-        send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
-        joined = true
-      } catch (e: any) {
-        send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
-        send('log', String(e && e.message ? e.message : e))
-      }
-    } else if (hasPwless) {
-      try {
-        send('step', { title: 'Join tailnet (non-interactive)' })
-        const svcOk = await ensureTailscaleService(true, (s) => send('log', s))
-        if (!svcOk) throw new Error('Tailscale service not reachable')
-        const args = [
-          'tailscale',
-          'up',
-          `--login-server=${HS_URL}`,
-          `--authkey=${TS_KEY}`,
-          `--hostname=${hostForJoin}`,
-          '--accept-dns=false',
-          '--ssh',
-          '--reset',
-          '--force-reauth',
-        ]
-        const r = await runQuick('sudo', ['-n', ...args], { timeoutMs: 20000 })
-        if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
-        const ok = await pollTailscaleConnected(60000)
-        if (!ok) throw new Error('tailscale did not connect within timeout')
-        send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
-        joined = true
-      } catch (e: any) {
-        send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
-        send('log', String(e && e.message ? e.message : e))
-      }
-    }
-    if (!joined && ALLOW_INTERACTIVE) {
-      send('step', { title: 'Join tailnet (interactive)' })
-      await spawnInteractiveJoin(HS_URL, TS_KEY, hostForJoin, (line) => send('log', line))
-      const ok = await pollTailscaleConnected(180000)
-      if (!ok) {
-        send('stepError', { title: 'Join tailnet (interactive)', code: 1 })
-        throw new Error('tailscale did not connect; please check the Terminal window or retry')
-      }
-      send('stepDone', { title: 'Join tailnet (interactive)', code: 0 })
-    }
-    if (!joined && !ALLOW_INTERACTIVE) {
-      throw new Error('Interactive join disabled and non-interactive join failed')
-    }
-
-    try {
-      const db = await getDB()
-      await db.run(
-        'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
-        'tailscale_connected',
-        '1'
-      )
-    } catch {}
-
-    if (flow === 'create' && process.env.TEST_FAST_SETUP !== '1') {
-      // 2) Per-org steps: discover nodes via Tailscale and bootstrap with Talos
-      const orgs: string[] = []
-      if (orgParam) orgs.push(orgParam)
-      else {
-        try {
-          const db = await getDB()
-          const rows: Array<{ name: string }> = await db.all('SELECT name FROM orgs ORDER BY id ASC')
-          rows.forEach((r) => orgs.push(r.name))
-        } catch {}
-      }
-      for (const o of orgs) {
-        const env: Record<string, string> = {}
-        // Discover nodes via tailscale status
-        try {
-          const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 5000 })
-          if (r.code === 0 && r.out) {
-            const j = JSON.parse(r.out)
-            const peers = (j && (j.Peers || j.Peer || [])) || []
-            const self = j && j.Self ? [j.Self] : []
-            const all = Array.isArray(peers) ? peers.concat(self) : self
-            const up = o.toUpperCase()
-            const nameMatches = (hn: string, pref: string) => hn.toLowerCase().startsWith(pref)
-            const tagsOf = (p: any) => (p && (p.Tags || p.Tag || p.forcedTags || [])) || []
-            const ipv4 = (p: any): string =>
-              p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
-                ? Array.isArray(p.TailscaleIPs)
-                  ? p.TailscaleIPs.find((x: string) => x.includes('.')) || ''
-                  : String(p.TailAddr || '').includes('.')
-                    ? String(p.TailAddr)
-                    : ''
-                : ''
-            const cp: string[] = []
-            const wk: string[] = []
-            for (const p of all) {
-              const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '')
-              const ip = ipv4(p)
-              if (!ip) continue
-              if (nameMatches(hn, `${o}-cp-`)) cp.push(ip)
-              else if (nameMatches(hn, `${o}-worker-`)) wk.push(ip)
-            }
-            if (!cp.length || !wk.length) {
-              for (const p of all) {
-                const ip = ipv4(p)
-                if (!ip) continue
-                const tags = tagsOf(p).map((t: any) => String(t))
-                if (!cp.length && tags.some((t: string) => /(^|:)cp($|:)/i.test(t))) cp.push(ip)
-                if (!wk.length && tags.some((t: string) => /(^|:)worker($|:)/i.test(t))) wk.push(ip)
-              }
-            }
-            if (cp.length) env[`${up}_CP_NODES`] = cp.join(' ')
-            if (wk.length) env[`${up}_WORKER_NODES`] = wk.join(' ')
-          }
-        } catch {}
-        if (!env[`${o.toUpperCase()}_CP_NODES`]) {
-          send('hint', `No control-plane nodes for '${o}'. Name nodes '${o}-cp-*' or tag with 'cp'.`)
-        }
-        await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o], env)
-        await runStep(`Install Tailscale Operator (${o})`, resolveScript('install_tailscale_operator.sh'), [o])
-        await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
-      }
-      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
-    } else if (flow === 'connect') {
-      if (process.env.TEST_FAST_SETUP !== '1') {
-        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
-      }
-    }
-
-    send('done', { ok: true })
-  } catch (e: any) {
-    send('error', String(e && e.message ? e.message : e))
-    send('done', { ok: false })
-  } finally {
-    res.end()
-  }
-})
 
 // Validate setup prerequisites and env; returns guidance list
 app.post('/api/setup/validate', (req, res) => {

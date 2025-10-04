@@ -6,6 +6,7 @@ import (
     "errors"
     "io"
     "log"
+    "crypto/tls"
     "net"
     "net/http"
     "net/http/httputil"
