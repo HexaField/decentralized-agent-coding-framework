@@ -30,6 +30,26 @@
 				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
 			],
 			"group": "test"
+		},
+		{
+			"label": "Build and test orchestrator (CRD-only)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/orchestrator/app && go build ./... && go test ./..."
+			],
+			"group": "build"
+		},
+		{
+			"label": "Re-run orchestrator and dashboard tests (with isolated HOME)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/orchestrator/app && go test ./... && cd ../../dashboard && npm -s test --silent"
+			],
+			"group": "test"
 		}
 	]
 }

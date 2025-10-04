@@ -6,8 +6,27 @@ import (
     "net/http"
     "net/http/httptest"
     "os"
+    "path/filepath"
     "testing"
 )
+
+func TestMain(m *testing.M) {
+    // Isolate HOME to a temp dir for tests
+    tmp, err := os.MkdirTemp("", "guildnet-home-")
+    if err != nil { panic(err) }
+    oldHome := os.Getenv("HOME")
+    oldUserProfile := os.Getenv("USERPROFILE")
+    os.Setenv("HOME", tmp)
+    os.Setenv("USERPROFILE", tmp)
+    // Ensure ~/.guildnet/state exists for any code needing it
+    _ = os.MkdirAll(filepath.Join(tmp, ".guildnet", "state"), 0o755)
+    code := m.Run()
+    // Restore and cleanup
+    if oldHome == "" { os.Unsetenv("HOME") } else { _ = os.Setenv("HOME", oldHome) }
+    if oldUserProfile == "" { os.Unsetenv("USERPROFILE") } else { _ = os.Setenv("USERPROFILE", oldUserProfile) }
+    _ = os.RemoveAll(tmp)
+    os.Exit(code)
+}
 
 func newServer() *http.ServeMux {
     mux := http.NewServeMux()
