@@ -473,10 +473,7 @@ app.post('/api/orgs', async (req, res) => {
     const row = await db.get('SELECT id, name, created_at FROM orgs WHERE name=?', name)
     // Create default placeholder configs for this org (kubeconfig and talosconfig)
     try {
-      const repoRoot = path.resolve(path.dirname(here), '..')
-      const tplDir = path.join(repoRoot, 'configs', 'templates')
       const base = stateBaseDir()
-      const kubeTpl = path.join(tplDir, 'kubeconfig.template.yaml')
       const talosDir = path.join(base, 'talos')
       const kubeDir = path.join(base, 'kube')
       fs.mkdirSync(talosDir, { recursive: true })
@@ -545,11 +542,53 @@ app.post('/api/orgs', async (req, res) => {
           console.warn('failed writing generated talosconfig for org', name, e)
         }
       }
-      if (!fs.existsSync(kubePath)) {
-        const content = fs.existsSync(kubeTpl)
-          ? fs.readFileSync(kubeTpl)
-          : Buffer.from('# kubeconfig placeholder\n')
-        fs.writeFileSync(kubePath, content)
+      // Always ensure a minimal kubeconfig exists for this org. If missing or invalid, (re)generate.
+      const looksValidKube = (txt: string) => {
+        if (!txt) return false
+        const t = txt.trim()
+        if (!t || t.startsWith('# TEMPLATE:')) return false
+        const hasApi = /\bapiVersion:\s*v1\b/i.test(txt)
+        const hasKind = /\bkind:\s*Config\b/i.test(txt)
+        return hasApi && hasKind
+      }
+      let needWriteKC = true
+      if (fs.existsSync(kubePath)) {
+        try {
+          const existing = fs.readFileSync(kubePath, 'utf8')
+          needWriteKC = !looksValidKube(existing)
+        } catch {
+          needWriteKC = true
+        }
+      }
+      if (needWriteKC) {
+        const org = name
+        const server = (process.env.DEFAULT_KUBE_SERVER || 'https://127.0.0.1:6443').trim()
+        const token = (process.env.DEFAULT_KUBE_TOKEN || 'PLACEHOLDER-TOKEN').trim()
+        const y = [
+          'apiVersion: v1',
+          'kind: Config',
+          'clusters:',
+          `- name: ${org}`,
+          '  cluster:',
+          `    server: ${server}`,
+          '    insecure-skip-tls-verify: true',
+          'contexts:',
+          `- name: ${org}`,
+          '  context:',
+          `    cluster: ${org}`,
+          `    user: ${org}-user`,
+          `current-context: ${org}`,
+          'users:',
+          `- name: ${org}-user`,
+          '  user:',
+          `    token: ${token}`,
+          '',
+        ].join('\n')
+        try {
+          fs.writeFileSync(kubePath, y)
+        } catch (e) {
+          console.warn('failed writing generated kubeconfig for org', name, e)
+        }
       }
     } catch (e) {
       console.warn('placeholder config creation failed:', e)
