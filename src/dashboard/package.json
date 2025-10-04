@@ -41,9 +41,6 @@
     "build:all": "echo 'No build needed'",
     "lint": "eslint --ext .ts server ui",
     "format": "prettier --write \"{server,ui}/**/*.{ts,tsx,js,css,html}\"",
-    "test": "vitest run",
-    "test:e2e": "vitest run",
-    "test:e2e:setup": "vitest run server/setup.e2e.test.ts",
-    "test:e2e:bootstrap": "vitest run server/bootstrap.e2e.test.ts"
+    "test": "vitest run"
   }
 }

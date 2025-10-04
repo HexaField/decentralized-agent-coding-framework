@@ -31,9 +31,6 @@ For Talos bootstrap:
 
 - Default run (will skip optional suites when not configured):
   - `npm test`
-- Targeted runs:
-  - `npm run test:e2e:setup`
-  - `E2E_CP_NODES="10.0.0.1 10.0.0.2" E2E_WK_NODES="10.0.0.3" npm run test:e2e:bootstrap`
 
 If you haven’t started the stack yet, use the repo scripts from the repo root to start orchestrator + dashboard first.
 

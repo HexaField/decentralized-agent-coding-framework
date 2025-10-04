@@ -237,9 +237,11 @@ export default function App() {
       if (!id) continue
       // Only poll non-terminal
       const st = String(t.status || '').toLowerCase()
-      if (["cancelled", "succeeded", "failed"].includes(st)) continue
+      if (['cancelled', 'succeeded', 'failed'].includes(st)) continue
       try {
-        const out = await fetch(`${SERVER_BASE}/api/taskStatus?id=${encodeURIComponent(id)}`).then((r) => r.json())
+        const out = await fetch(`${SERVER_BASE}/api/taskStatus?id=${encodeURIComponent(id)}`).then(
+          (r) => r.json()
+        )
         setTaskDetails((prev) => ({ ...prev, [id]: out }))
       } catch {}
     }
@@ -429,8 +431,8 @@ export default function App() {
                 t.kind === 'success'
                   ? 'bg-green-600 text-white'
                   : t.kind === 'error'
-                  ? 'bg-red-600 text-white'
-                  : 'bg-slate-800 text-white'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-slate-800 text-white'
               }`}
             >
               {t.text}
@@ -680,7 +682,11 @@ export default function App() {
                   const k8s = () => (det() as any).k8s
                   const conditions = () => (crd() && crd().status && crd().status.conditions) || []
                   const fmtTime = (s: string) => {
-                    try { return new Date(s).toLocaleString() } catch { return s }
+                    try {
+                      return new Date(s).toLocaleString()
+                    } catch {
+                      return s
+                    }
                   }
                   return (
                     <div class="border rounded p-2 dark:border-slate-700">
@@ -688,7 +694,11 @@ export default function App() {
                         <span>
                           [{t.id}] {t.status}
                         </span>
-                        <button class="px-2 py-1 border rounded text-xs" onClick={() => cancelTask(t.id)} disabled={String(t.status).toLowerCase()==='cancelled'}>
+                        <button
+                          class="px-2 py-1 border rounded text-xs"
+                          onClick={() => cancelTask(t.id)}
+                          disabled={String(t.status).toLowerCase() === 'cancelled'}
+                        >
                           Cancel
                         </button>
                       </div>
@@ -700,7 +710,10 @@ export default function App() {
                           <div class="mt-1">
                             <For each={conditions()}>
                               {(c: any) => (
-                                <div>- {c.type}: {c.status} {c.reason ? `(${c.reason})` : ''} {c.lastTransitionTime ? `@ ${fmtTime(c.lastTransitionTime)}` : ''}</div>
+                                <div>
+                                  - {c.type}: {c.status} {c.reason ? `(${c.reason})` : ''}{' '}
+                                  {c.lastTransitionTime ? `@ ${fmtTime(c.lastTransitionTime)}` : ''}
+                                </div>
                               )}
                             </For>
                           </div>
@@ -710,7 +723,9 @@ export default function App() {
                         <div class="mt-2 text-xs">
                           <div class="font-semibold">K8s</div>
                           <div>phase: {(k8s() as any)?.phase}</div>
-                          <div>ready: {(k8s() as any)?.ready}/{(k8s() as any)?.desired}</div>
+                          <div>
+                            ready: {(k8s() as any)?.ready}/{(k8s() as any)?.desired}
+                          </div>
                         </div>
                       </Show>
                     </div>
