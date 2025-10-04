@@ -6,10 +6,24 @@ try {
   if (!process.env.ORCHESTRATOR_TOKEN || !process.env.DASHBOARD_TOKEN) {
     const pathMod = await import('path')
     const fsMod = await import('fs')
-    const guessRoot = pathMod.resolve(pathMod.dirname(hereFile), '..', '..', '.env')
-    if (fsMod.existsSync(guessRoot)) {
-      const dotenv = await import('dotenv')
-      dotenv.config({ path: guessRoot })
+    const candidates = [
+      // repo root .env (../../.. from server.ts)
+      pathMod.resolve(pathMod.dirname(hereFile), '..', '..', '..', '.env'),
+      // dashboard directory .env
+      pathMod.resolve(pathMod.dirname(hereFile), '..', '.env'),
+      // src .env (legacy)
+      pathMod.resolve(pathMod.dirname(hereFile), '..', '..', '.env'),
+      // cwd .env
+      pathMod.resolve(process.cwd(), '.env'),
+    ]
+    for (const p of candidates) {
+      try {
+        if (fsMod.existsSync(p)) {
+          const dotenv = await import('dotenv')
+          dotenv.config({ path: p })
+          break
+        }
+      } catch {}
     }
   }
 } catch {}
@@ -31,13 +45,31 @@ const TOKEN = process.env.DASHBOARD_TOKEN || 'dashboard-secret'
 function normalizeOrchUrl(raw: string): string {
   try {
     const u = new URL(raw)
-    if (u.hostname === '0.0.0.0') u.hostname = '127.0.0.1'
+    const isDev = process.env.UI_DEV === '1'
+    // In local dev, avoid container-internal hostnames; prefer loopback
+    if (isDev) {
+      if (u.hostname === '0.0.0.0' || u.hostname === 'mvp-orchestrator') {
+        u.hostname = '127.0.0.1'
+        // Compose maps orchestrator 8080 -> host 18080; use 18080 in dev.
+        u.port = '18080'
+        if (!u.protocol) u.protocol = 'http:'
+      }
+      // If someone pointed to docker network name or blank host, fixup to localhost:18080
+      if (!u.hostname || u.hostname === '') {
+        u.hostname = '127.0.0.1'
+        if (!u.port) u.port = '18080'
+        if (!u.protocol) u.protocol = 'http:'
+      }
+    } else {
+      // Non-dev: minor fix for 0.0.0.0
+      if (u.hostname === '0.0.0.0') u.hostname = '127.0.0.1'
+    }
     return u.toString().replace(/\/$/, '')
   } catch {
     return raw
   }
 }
-const ORCH_URL = normalizeOrchUrl(
+let ORCH_URL = normalizeOrchUrl(
   process.env.ORCHESTRATOR_URL ||
     (process.env.UI_DEV === '1' ? 'http://127.0.0.1:18080' : 'http://mvp-orchestrator:8080')
 )
@@ -128,6 +160,13 @@ app.use((req, res, next) => {
   }
   next()
 })
+
+// Resolve orchestrator base URL at request time, honoring a dev-only override
+function getOrchBase(): string {
+  const ovr = (global as any).__ORCH_OVERRIDE__
+  const base = ovr && typeof ovr === 'string' && ovr.trim() ? String(ovr).trim() : ORCH_URL
+  return base.replace(/\/$/, '')
+}
 
 function fetchJSON(
   urlStr: string,
@@ -437,7 +476,6 @@ app.post('/api/orgs', async (req, res) => {
       const repoRoot = path.resolve(path.dirname(here), '..')
       const tplDir = path.join(repoRoot, 'configs', 'templates')
       const base = stateBaseDir()
-      const talosTpl = path.join(tplDir, 'talosconfig.template.yaml')
       const kubeTpl = path.join(tplDir, 'kubeconfig.template.yaml')
       const talosDir = path.join(base, 'talos')
       const kubeDir = path.join(base, 'kube')
@@ -445,11 +483,67 @@ app.post('/api/orgs', async (req, res) => {
       fs.mkdirSync(kubeDir, { recursive: true })
       const talosPath = path.join(talosDir, `${name}.talosconfig`)
       const kubePath = path.join(kubeDir, `${name}.config`)
-      if (!fs.existsSync(talosPath)) {
-        const content = fs.existsSync(talosTpl)
-          ? fs.readFileSync(talosTpl)
-          : Buffer.from('# talosconfig placeholder\n')
-        fs.writeFileSync(talosPath, content)
+      // Always ensure a minimal talosconfig exists for this org. If missing or invalid, (re)generate.
+      const looksValidTalos = (txt: string) => {
+        if (!txt) return false
+        const t = txt.trim()
+        if (!t || t.startsWith('# TEMPLATE:')) return false
+        const hasCtx = /\bcontexts?:/i.test(txt)
+        const hasCred = /\b(ca:|crt:|key:)/i.test(txt)
+        const hasEnds = /\b(endpoints|nodes):/i.test(txt)
+        return hasCtx && hasCred && hasEnds
+      }
+      let needWrite = true
+      if (fs.existsSync(talosPath)) {
+        try {
+          const existing = fs.readFileSync(talosPath, 'utf8')
+          needWrite = !looksValidTalos(existing)
+        } catch {
+          needWrite = true
+        }
+      }
+      if (needWrite) {
+        const orgCtx = name
+        const endpoints = [process.env.DEFAULT_TALOS_ENDPOINT || '127.0.0.1']
+        const nodes = [process.env.DEFAULT_TALOS_NODE || endpoints[0]]
+        const caPem = (
+          process.env.DEFAULT_TALOS_CA_PEM ||
+          '-----BEGIN CERTIFICATE-----\nPLACEHOLDER-CA\n-----END CERTIFICATE-----'
+        ).trim()
+        const crtPem = (
+          process.env.DEFAULT_TALOS_CRT_PEM ||
+          '-----BEGIN CERTIFICATE-----\nPLACEHOLDER-CRT\n-----END CERTIFICATE-----'
+        ).trim()
+        const keyPem = (
+          process.env.DEFAULT_TALOS_KEY_PEM ||
+          '-----BEGIN PRIVATE KEY-----\nPLACEHOLDER-KEY\n-----END PRIVATE KEY-----'
+        ).trim()
+        const indent = (s: string, n = 6) =>
+          s
+            .split(/\r?\n/)
+            .map((l) => ' '.repeat(n) + l)
+            .join('\n')
+        const yaml = [
+          `context: ${orgCtx}`,
+          'contexts:',
+          `  - name: ${orgCtx}`,
+          '    endpoints:',
+          ...endpoints.map((e) => `      - ${e}`),
+          '    nodes:',
+          ...nodes.map((e) => `      - ${e}`),
+          '    ca: |',
+          indent(caPem, 6),
+          '    crt: |',
+          indent(crtPem, 6),
+          '    key: |',
+          indent(keyPem, 6),
+          '',
+        ].join('\n')
+        try {
+          fs.writeFileSync(talosPath, yaml)
+        } catch (e) {
+          console.warn('failed writing generated talosconfig for org', name, e)
+        }
       }
       if (!fs.existsSync(kubePath)) {
         const content = fs.existsSync(kubeTpl)
@@ -498,12 +592,32 @@ app.post('/api/orgs', async (req, res) => {
           }
         } catch {}
       }
-      if (endpoint) {
+      // Only attempt auto kubeconfig generation if a valid talosconfig is present
+      const talosDir2 = path.join(stateBaseDir(), 'talos')
+      const talosPath2 = path.join(talosDir2, `${name}.talosconfig`)
+      const validateTalosLocal = (txt: string) => {
+        if (!txt) return false
+        const trimmed = txt.trim()
+        if (!trimmed || trimmed.startsWith('# TEMPLATE:')) return false
+        const hasContexts = /\bcontexts?:/i.test(txt)
+        const hasAnyCred = /\b(crt|key|ca):/i.test(txt)
+        const hasEndpointOrNodes = /\b(endpoints|nodes):/i.test(txt)
+        return hasContexts && hasAnyCred && hasEndpointOrNodes
+      }
+      const talosExists = fs.existsSync(talosPath2)
+      let talosValid = false
+      try {
+        if (talosExists) {
+          const txt = fs.readFileSync(talosPath2, 'utf8')
+          talosValid = validateTalosLocal(txt)
+        }
+      } catch {}
+      if (endpoint && talosValid) {
         // Ask orchestrator to generate kubeconfig; it writes to ~/.guildnet/state/kube
         const headers: Record<string, string> = { 'Content-Type': 'application/json' }
         if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
         try {
-          await fetchJSON(`${ORCH_URL}/kubeconfig/generate`, {
+          await fetchJSON(`${getOrchBase()}/kubeconfig/generate`, {
             method: 'POST',
             headers,
             body: JSON.stringify({ org: name, endpoint }),
@@ -627,8 +741,27 @@ app.post('/api/orgs/:name/kubeconfig/generate', async (req, res) => {
     const body = (typeof req.body === 'object' && req.body) || {}
     const endpoint = String((body as any).endpoint || '').trim()
     if (!endpoint) return res.status(400).json({ ok: false, error: 'endpoint required' })
+    // Require a real Talosconfig for this org before asking orchestrator to generate kubeconfig
+    try {
+      const talosPath = path.join(stateBaseDir(), 'talos', `${name}.talosconfig`)
+      if (!fs.existsSync(talosPath)) {
+        return res.status(400).json({
+          ok: false,
+          error: `talosconfig not found for org '${name}'. Upload a valid talosconfig in Org Manager before generating kubeconfig.`,
+        })
+      }
+      const text = fs.readFileSync(talosPath, 'utf8')
+      const meaningful = text.split(/\r?\n/).some((ln) => ln.trim() && !ln.trim().startsWith('#'))
+      const looksTalos = /contexts?:/i.test(text)
+      if (!meaningful || !looksTalos) {
+        return res.status(400).json({
+          ok: false,
+          error: `talosconfig for org '${name}' appears empty or invalid. Replace it with a valid talosconfig (contains contexts) and retry.`,
+        })
+      }
+    } catch {}
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/kubeconfig/generate`, {
+    const out = await fetchJSON(`${getOrchBase()}/kubeconfig/generate`, {
       method: 'POST',
       headers,
       body: { org: name, endpoint },
@@ -636,7 +769,16 @@ app.post('/api/orgs/:name/kubeconfig/generate', async (req, res) => {
     // Reflect orchestrator response directly
     res.json(out)
   } catch (e) {
-    res.status(502).json({ ok: false, error: String(e) })
+    const msg = String(e)
+    if (/talos config file is empty|failed to resolve configuration context/i.test(msg)) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          'Talos configuration is missing or invalid. Upload a valid talosconfig for this org, then retry kubeconfig generation.',
+        details: msg,
+      })
+    }
+    res.status(502).json({ ok: false, error: msg })
   }
 })
 
@@ -656,7 +798,7 @@ app.post('/api/orgs/:name/bootstrap', async (req, res) => {
   // 1) Try orchestrator path first
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/orgs/bootstrap`, {
+    const out = await fetchJSON(`${getOrchBase()}/orgs/bootstrap`, {
       method: 'POST',
       headers,
       body: { org, cpNodes, workerNodes },
@@ -713,7 +855,7 @@ app.use('/embed/local/:port', (req, res) => {
 app.use('/embed/orchestrator/:port', (req, res) => {
   const port = Number(req.params.port)
   if (!port || Number.isNaN(port)) return res.status(400).end('bad port')
-  const orchBase = ORCH_URL.replace(/\/$/, '')
+  const orchBase = getOrchBase()
   const target = `${orchBase}/editor/proxy/${port}`
   const rest = req.url.replace(/^\/embed\/orchestrator\/(\d+)/, '') || '/'
   ;(req as any).url = rest
@@ -745,9 +887,10 @@ app.get('/api/health', (req, res) => res.json({ status: 'ok' }))
 app.get('/api/state', async (req, res) => {
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const base = getOrchBase()
     const [tasks, agents] = await Promise.all([
-      fetchJSON(`${ORCH_URL}/tasks`, { headers }),
-      fetchJSON(`${ORCH_URL}/agents`, { headers }),
+      fetchJSON(`${base}/tasks`, { headers }),
+      fetchJSON(`${base}/agents`, { headers }),
     ])
     let pr: any = null
     try {
@@ -772,7 +915,7 @@ app.post('/api/editor/open', async (req, res) => {
     const org = (req.body && req.body.org) || ''
     if (!name) return res.status(400).json({ error: 'missing name' })
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/agents/editor/open`, {
+    const out = await fetchJSON(`${getOrchBase()}/agents/editor/open`, {
       method: 'POST',
       headers,
       body: { name, org },
@@ -787,7 +930,7 @@ app.post('/api/editor/close', async (req, res) => {
     const name = (req.body && req.body.name) || ''
     if (!name) return res.status(400).json({ error: 'missing name' })
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/agents/editor/close`, {
+    const out = await fetchJSON(`${getOrchBase()}/agents/editor/close`, {
       method: 'POST',
       headers,
       body: { name },
@@ -809,11 +952,11 @@ app.post('/api/chat', async (req, res) => {
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
     const body = { org, task: text }
-    const out = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
+    const out = await fetchJSON(`${getOrchBase()}/schedule`, { method: 'POST', headers, body })
     // Trigger agent deployment for this org (best-effort)
     let deployResult: any = null
     try {
-      deployResult = await fetchJSON(`${ORCH_URL}/agents/deploy`, {
+      deployResult = await fetchJSON(`${getOrchBase()}/agents/deploy`, {
         method: 'POST',
         headers,
         body: { org },
@@ -837,7 +980,9 @@ app.get('/api/taskLogs', async (req, res) => {
   if (!id) return res.status(400).json({ error: 'missing id' })
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/tasks/logs?id=${encodeURIComponent(id)}`, { headers })
+    const out = await fetchJSON(`${getOrchBase()}/tasks/logs?id=${encodeURIComponent(id)}`, {
+      headers,
+    })
     res.json(out)
   } catch (e) {
     res.status(502).json({ error: String(e) })
@@ -849,7 +994,7 @@ app.get('/api/taskStatus', async (req, res) => {
   if (!id) return res.status(400).json({ error: 'missing id' })
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/tasks/status?id=${encodeURIComponent(id)}`, {
+    const out = await fetchJSON(`${getOrchBase()}/tasks/status?id=${encodeURIComponent(id)}`, {
       headers,
     })
     res.json(out)
@@ -862,7 +1007,7 @@ app.post('/api/task/cancel', async (req, res) => {
     const id = (req.body && String(req.body.id || '').trim()) || ''
     if (!id) return res.status(400).json({ error: 'missing id' })
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/tasks/cancel`, {
+    const out = await fetchJSON(`${getOrchBase()}/tasks/cancel`, {
       method: 'POST',
       headers,
       body: { id },
@@ -877,7 +1022,7 @@ app.get('/api/agentLogs', async (req, res) => {
   if (!name) return res.status(400).json({ error: 'missing name' })
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/agents/logs?name=${encodeURIComponent(name)}`, {
+    const out = await fetchJSON(`${getOrchBase()}/agents/logs?name=${encodeURIComponent(name)}`, {
       headers,
     })
     res.json(out)
@@ -893,7 +1038,7 @@ app.post('/api/k8s/prepare', async (req, res) => {
     const namespace = (req.body && String(req.body.namespace || '').trim()) || ''
     if (!org) return res.status(400).json({ error: 'missing org' })
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${ORCH_URL}/k8s/prepare`, {
+    const out = await fetchJSON(`${getOrchBase()}/k8s/prepare`, {
       method: 'POST',
       headers,
       body: { org, namespace },
@@ -901,6 +1046,126 @@ app.post('/api/k8s/prepare', async (req, res) => {
     res.json(out)
   } catch (e) {
     res.status(502).json({ error: String(e) })
+  }
+})
+
+// Deploy orchestrator into a cluster via kubectl apply and wait for readiness
+app.post('/api/k8s/orchestrator/deploy', async (req, res) => {
+  try {
+    const org = (req.body && String(req.body.org || '').trim()) || ''
+    if (!org) return res.status(400).json({ error: 'missing org' })
+    const repoRoot = path.resolve(path.dirname(here), '..', '..')
+    const manifest = path.join(repoRoot, 'src', 'k8s', 'orchestrator', 'deployment.yaml')
+    // Resolve kubeconfig for this org
+    const kubeCfg = path.join(stateBaseDir(), 'kube', `${org}.config`)
+    if (!fs.existsSync(kubeCfg)) {
+      return res.status(400).json({
+        ok: false,
+        error: `kubeconfig not found for org '${org}': ${kubeCfg}. Upload or generate it first.`,
+      })
+    }
+    // Quick connectivity preflight (API server reachable?)
+    // Use a compatibility sequence for different kubectl versions; best-effort only
+    const tryCmd = async (args: string[]) =>
+      await runQuick('kubectl', ['--kubeconfig', kubeCfg, ...args])
+    let preOk = false
+    let last = { code: 1, out: '' }
+    for (const args of [
+      ['version', '-o', 'json'],
+      ['cluster-info'],
+      ['get', 'ns', 'default', '--request-timeout=10s'],
+      ['auth', 'can-i', 'get', 'namespaces', '-A', '--request-timeout=10s'],
+    ]) {
+      last = await tryCmd(args)
+      if (last.code === 0) {
+        preOk = true
+        break
+      }
+    }
+    if (!preOk) {
+      const msg = (last.out || '').toString()
+      const softOk =
+        /couldn\'t get current server API group list|the server could not find the requested resource|NotFound/i.test(
+          msg
+        )
+      const kubectlMissing = /command not found|kubectl: not found/i.test(msg)
+      if (kubectlMissing) {
+        return res.status(500).json({ ok: false, error: 'kubectl not found on PATH' })
+      }
+      // If API group list is not ready or other transient NotFound, continue to apply and let it decide
+      if (!softOk) {
+        // Proceed but include a warning in response if apply succeeds
+        try {
+          console.warn('[deploy preflight] non-fatal kubectl error:', msg)
+        } catch {}
+      }
+    }
+    // Explicit API discovery check: list api-resources to ensure server is a Kubernetes API
+    const apiRes = await tryCmd(['api-resources', '-o', 'name', '--request-timeout=10s'])
+    if (apiRes.code !== 0) {
+      let serverUrl = ''
+      try {
+        const text = fs.readFileSync(kubeCfg, 'utf8')
+        const m = text.match(/\bserver:\s*(\S+)/)
+        if (m) serverUrl = m[1]
+      } catch {}
+      return res.status(400).json({
+        ok: false,
+        error:
+          'Kubernetes API discovery failed for this kubeconfig. Verify the kubeconfig points to a running Kubernetes API server (not a Talos endpoint), and that your user has permissions to list API resources.',
+        details: (apiRes.out || '').toString().slice(0, 500),
+        kubeconfig: kubeCfg,
+        server: serverUrl || undefined,
+      })
+    }
+    // Apply manifests using org kubeconfig
+    const apply = await runQuick('kubectl', [
+      '--kubeconfig',
+      kubeCfg,
+      'apply',
+      '-f',
+      manifest,
+      '-n',
+      'mvp-agents',
+      '--validate=false',
+    ])
+    if (apply.code !== 0) {
+      const out = (apply.out || '').toString()
+      if (/unable to recognize|the server could not find the requested resource/i.test(out)) {
+        let serverUrl = ''
+        try {
+          const text = fs.readFileSync(kubeCfg, 'utf8')
+          const m = text.match(/\bserver:\s*(\S+)/)
+          if (m) serverUrl = m[1]
+        } catch {}
+        return res.status(400).json({
+          ok: false,
+          error:
+            'Kubernetes API did not recognize resource kinds. Ensure this kubeconfig targets a healthy Kubernetes cluster and not a Talos management endpoint. The API must be reachable and support core/apps resources.',
+          details: out.slice(0, 1000),
+          kubeconfig: kubeCfg,
+          server: serverUrl || undefined,
+        })
+      }
+      return res.status(500).json({ ok: false, error: out })
+    }
+    // Wait for Deployment rollout
+    const rollout = await runQuick('kubectl', [
+      '--kubeconfig',
+      kubeCfg,
+      'rollout',
+      'status',
+      'deployment/orchestrator',
+      '-n',
+      'mvp-agents',
+      '--timeout=60s',
+    ])
+    if (rollout.code !== 0) return res.status(500).json({ ok: false, error: rollout.out })
+    // Return service URL (cluster DNS) and token hint
+    const url = 'http://orchestrator.mvp-agents.svc.cluster.local:8080'
+    res.json({ ok: true, url })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) })
   }
 })
 
@@ -963,7 +1228,7 @@ app.get('/api/stream/agent', (req, res) => {
   if (!name) return res.status(400).end('missing name')
   const headers: Record<string, string> = {}
   if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
-  const targetUrl = new URL(`${ORCH_URL}/events/agents?name=${encodeURIComponent(name)}`)
+  const targetUrl = new URL(`${getOrchBase()}/events/agents?name=${encodeURIComponent(name)}`)
   const lib = targetUrl.protocol === 'https:' ? https : http
   const r = lib.request(
     {
@@ -997,11 +1262,11 @@ app.get('/api/chat/stream', async (req, res) => {
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
     const body = { org, task: text }
-    const task = await fetchJSON(`${ORCH_URL}/schedule`, { method: 'POST', headers, body })
+    const task = await fetchJSON(`${getOrchBase()}/schedule`, { method: 'POST', headers, body })
     send('task', JSON.stringify(task))
     // Best-effort deploy an agent for this org
     try {
-      const deploy = await fetchJSON(`${ORCH_URL}/agents/deploy`, {
+      const deploy = await fetchJSON(`${getOrchBase()}/agents/deploy`, {
         method: 'POST',
         headers,
         body: { org },
@@ -1081,14 +1346,28 @@ app.get('/api/debug/stream', async (req, res) => {
 app.get('/api/debug', async (req, res) => {
   try {
     const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
+    const base = getOrchBase()
     const [health, tasks, agents] = await Promise.all([
-      fetchJSON(`${ORCH_URL}/health`, { headers }).catch((e) => ({ error: String(e) })),
-      fetchJSON(`${ORCH_URL}/tasks`, { headers }).catch((e) => ({ error: String(e), tasks: [] })),
-      fetchJSON(`${ORCH_URL}/agents`, { headers }).catch((e) => ({ error: String(e), agents: [] })),
+      fetchJSON(`${base}/health`, { headers }).catch((e) => ({ error: String(e) })),
+      fetchJSON(`${base}/tasks`, { headers }).catch((e) => ({ error: String(e), tasks: [] })),
+      fetchJSON(`${base}/agents`, { headers }).catch((e) => ({ error: String(e), agents: [] })),
     ])
-    res.json({ ok: true, health, tasks, agents, server: { port: PORT, orch: ORCH_URL } })
+    res.json({ ok: true, health, tasks, agents, server: { port: PORT, orch: base } })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
+  }
+})
+
+// Update orchestrator URL at runtime (dev-only). Not persisted; for convenience in UI flows.
+app.post('/api/debug/orchestrator-url', (req, res) => {
+  if (process.env.NODE_ENV === 'production') return res.status(405).json({ error: 'disabled' })
+  try {
+    const url = (req.body && String((req.body as any).url || '').trim()) || ''
+    if (!url) return res.status(400).json({ error: 'missing url' })
+    ;(global as any).__ORCH_OVERRIDE__ = url
+    res.json({ ok: true, url })
+  } catch (e) {
+    res.status(500).json({ error: String(e) })
   }
 })
 
@@ -1772,7 +2051,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         const port = Number(m2[1])
         const rest = m2[2] || '/'
         req.url = rest
-        const orchBase = ORCH_URL.replace(/\/$/, '')
+        const orchBase = getOrchBase()
         const target = `${orchBase}/editor/proxy/${port}`
         {
           const wsOrigin = `http://127.0.0.1:${port}`

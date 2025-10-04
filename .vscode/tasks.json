@@ -78,8 +78,7 @@
 				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/orchestrator/app && go test ./... && cd ../../dashboard && npm -s test --silent"
 			],
 			"group": "test"
-		}
-		,
+		},
 		{
 			"label": "Framework: rebuild + up (compose)",
 			"type": "shell",
@@ -89,7 +88,10 @@
 				"bash src/scripts/start_orchestrator.sh rebuild && bash src/scripts/start_orchestrator.sh up"
 			],
 			"group": "build",
-			"presentation": { "reveal": "always", "panel": "dedicated" }
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
 		},
 		{
 			"label": "Framework: up (compose)",
@@ -100,7 +102,10 @@
 				"bash src/scripts/start_orchestrator.sh up"
 			],
 			"group": "build",
-			"presentation": { "reveal": "always", "panel": "dedicated" }
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
 		},
 		{
 			"label": "Framework: wait for health",
@@ -111,7 +116,10 @@
 				"set -e; echo 'Waiting for dashboard(:8443) and orchestrator(:18080)...'; for i in {1..90}; do curl -skf https://127.0.0.1:8443/api/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && echo 'Services healthy' && exit 0; sleep 2; done; echo 'Services not healthy in time'; exit 1"
 			],
 			"group": "test",
-			"presentation": { "reveal": "always", "panel": "dedicated" }
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
 		},
 		{
 			"label": "Test: dashboard bootstrap proxy (with stack)",
@@ -122,7 +130,10 @@
 				"cd src/dashboard && npm -s test --silent -- server/bootstrap.proxy.test.ts"
 			],
 			"group": "test",
-			"presentation": { "reveal": "always", "panel": "dedicated" }
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
 		},
 		{
 			"label": "Full framework: run dashboard proxy test",
@@ -131,6 +142,16 @@
 				"Framework: up (compose)",
 				"Framework: wait for health",
 				"Test: dashboard bootstrap proxy (with stack)"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - quick",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd src/dashboard && npm -s test --silent"
 			],
 			"group": "test"
 		}

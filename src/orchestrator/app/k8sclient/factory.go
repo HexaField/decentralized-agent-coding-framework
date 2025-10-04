@@ -42,7 +42,19 @@ func KubeconfigPathForOrg(org string) string {
 }
 
 // LoadForOrg returns a clientset and rest config for the org's cluster.
+// In single-org in-cluster mode (IN_CLUSTER=1), this ignores the org and uses
+// in-cluster configuration (ServiceAccount) for the current cluster.
 func LoadForOrg(org string) (*kubernetes.Clientset, *rest.Config, error) {
+    // If running inside the cluster, prefer in-cluster config.
+    if os.Getenv("IN_CLUSTER") == "1" || os.Getenv("ORCHESTRATOR_MODE") == "single" {
+        if cfg, err := rest.InClusterConfig(); err == nil {
+            cfg.Timeout = 15 * time.Second
+            cs, err2 := kubernetes.NewForConfig(cfg)
+            if err2 != nil { return nil, nil, fmt.Errorf("new clientset: %w", err2) }
+            return cs, cfg, nil
+        }
+        // fallthrough to file-based if SA not mounted (dev)
+    }
     path := KubeconfigPathForOrg(org)
     cfg, err := clientcmd.BuildConfigFromFlags("", path)
     if err != nil { return nil, nil, fmt.Errorf("build kubeconfig for %s: %w", org, err) }

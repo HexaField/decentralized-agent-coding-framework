@@ -141,6 +141,10 @@ func stateBaseDir() string {
 
 // ensureEditorForward starts (or returns) a kubectl port-forward to the agent's Service
 func ensureEditorForward(name, org string) (int, error) {
+    // In in-cluster single-org mode, we avoid port-forward entirely.
+    if os.Getenv("IN_CLUSTER") == "1" || os.Getenv("ORCHESTRATOR_MODE") == "single" {
+        return 0, fmt.Errorf("port-forward disabled in in-cluster mode; use /editor/proxy/service/{name}")
+    }
     svcName := deriveServiceName(name)
     editorMu.Lock()
     if pf, ok := editorPF[name]; ok {
@@ -314,6 +318,9 @@ func registerHandlers(mux *http.ServeMux) {
     // Writes to ~/.guildnet/state/kube/<org>.config so both orchestrator and dashboard can read it.
     mux.HandleFunc("/kubeconfig/generate", requireToken(func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        if os.Getenv("IN_CLUSTER") == "1" || os.Getenv("ORCHESTRATOR_MODE") == "single" {
+            http.Error(w, "disabled in in-cluster mode", 405); return
+        }
         var req struct{ Org, Endpoint string }
         if err := decodeJSON(r, &req); err != nil { http.Error(w, err.Error(), 400); return }
         req.Org = strings.TrimSpace(req.Org)
@@ -383,6 +390,9 @@ func registerHandlers(mux *http.ServeMux) {
     // Steps: gen config -> apply to cp1 (init) -> apply to remaining CPs (controlplane) -> apply to workers (join) -> bootstrap -> write talosconfig/kubeconfig
     mux.HandleFunc("/orgs/bootstrap", requireToken(func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost { http.Error(w, "method", 405); return }
+        if os.Getenv("IN_CLUSTER") == "1" || os.Getenv("ORCHESTRATOR_MODE") == "single" {
+            http.Error(w, "disabled in in-cluster mode", 405); return
+        }
         var req struct{
             Org string `json:"org"`
             CPNodes []string `json:"cpNodes"`
@@ -516,6 +526,10 @@ func registerHandlers(mux *http.ServeMux) {
     // Proxy endpoint to expose a local forwarded editor port over the orchestrator's HTTP port.
     // Usage: GET /editor/proxy/{port}/... -> http://127.0.0.1:{port}/...
     mux.HandleFunc("/editor/proxy/", func(w http.ResponseWriter, r *http.Request) {
+        if os.Getenv("IN_CLUSTER") == "1" || os.Getenv("ORCHESTRATOR_MODE") == "single" {
+            http.Error(w, "use /editor/proxy/service/{name} in in-cluster mode", 400)
+            return
+        }
         // path = /editor/proxy/{port}/rest...
         p := strings.TrimPrefix(r.URL.Path, "/editor/proxy/")
         if p == "" { http.Error(w, "missing port", 400); return }
@@ -549,6 +563,41 @@ func registerHandlers(mux *http.ServeMux) {
             req.Host = req.URL.Host
             req.Header.Set(csHeader, csToken)
         }
+        rp.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
+            http.Error(w, "proxy error: "+err.Error(), 502)
+        }
+        rp.ServeHTTP(w, r)
+    })
+
+    // In-cluster service reverse proxy for editor access: /editor/proxy/service/{agentName}/...
+    // Routes to http(s)://<service>.<ns>.svc.cluster.local:8443
+    mux.HandleFunc("/editor/proxy/service/", func(w http.ResponseWriter, r *http.Request) {
+        name := strings.TrimPrefix(r.URL.Path, "/editor/proxy/service/")
+        if name == "" { http.Error(w, "missing name", 400); return }
+        // rewrite rest path
+        parts := strings.SplitN(name, "/", 2)
+        agent := parts[0]
+        rest := "/"
+        if len(parts) == 2 && parts[1] != "" { rest = "/" + parts[1] }
+        // Resolve service DNS
+        ns := os.Getenv("AGENTS_NAMESPACE"); if ns == "" { ns = "mvp-agents" }
+        svc := deriveServiceName(agent)
+        // Prefer HTTPS (code-server), skip TLS verification if self-signed
+        targetHost := svc + "." + ns + ".svc.cluster.local:8443"
+        rp := &httputil.ReverseProxy{Director: func(req *http.Request) {
+            req.URL.Scheme = "https"
+            req.URL.Host = targetHost
+            req.URL.Path = rest
+            req.Host = req.URL.Host
+        }}
+        // Drop X-Frame-Options like external path
+        rp.ModifyResponse = func(resp *http.Response) error {
+            resp.Header.Del("X-Frame-Options")
+            resp.Header.Del("Content-Security-Policy")
+            return nil
+        }
+        // Accept self-signed certs
+        rp.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
         rp.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
             http.Error(w, "proxy error: "+err.Error(), 502)
         }

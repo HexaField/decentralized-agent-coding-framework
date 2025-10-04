@@ -24,6 +24,7 @@ export default function OrgManager(props: Props): JSX.Element {
   const [talosUploading, setTalosUploading] = createSignal<Record<string, boolean>>({})
   const [bootMsg, setBootMsg] = createSignal<string>('')
   const [bootOrg, setBootOrg] = createSignal<string>('')
+  const [orchMsg, setOrchMsg] = createSignal<Record<string, string>>({})
 
   async function load() {
     setLoading(true)
@@ -123,6 +124,35 @@ export default function OrgManager(props: Props): JSX.Element {
   }
 
   onMount(load)
+
+  async function deployOrchestratorInCluster(name: string) {
+    try {
+      setOrchMsg((p) => ({ ...p, [name]: 'Deploying orchestrator to cluster…' }))
+      const r = await fetch(`${props.serverBase}/api/k8s/orchestrator/deploy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Auth-Token': props.dashboardToken },
+        body: JSON.stringify({ org: name }),
+      }).then((x) => x.json())
+      if (!r || r.ok === false || !r.url) {
+        console.error(r.error, r.details)
+        throw new Error(r.error || 'deploy failed')
+      }
+      // Point dashboard backend at the in-cluster orchestrator URL for subsequent calls
+      const u = String(r.url)
+      const r2 = await fetch(`${props.serverBase}/api/debug/orchestrator-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: u }),
+      }).then((x) => x.json())
+      if (!r2 || r2.ok === false) {
+        console.error(r2.error, r2.details)
+        throw new Error(r2.error || 'override failed')
+      }
+      setOrchMsg((p) => ({ ...p, [name]: `Orchestrator ready at ${u}` }))
+    } catch (e: any) {
+      setOrchMsg((p) => ({ ...p, [name]: `Error: ${String(e?.message || e)}` }))
+    }
+  }
 
   async function prepareNamespace(name: string) {
     try {
@@ -323,6 +353,15 @@ export default function OrgManager(props: Props): JSX.Element {
                   Prepare namespace
                 </button>
                 <span class="text-xs opacity-70">{nsMsg()[o.name] || ''}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  class="px-2 py-1 border rounded"
+                  onClick={() => deployOrchestratorInCluster(o.name)}
+                >
+                  Deploy orchestrator in-cluster
+                </button>
+                <span class="text-xs opacity-70">{orchMsg()[o.name] || ''}</span>
               </div>
               <textarea
                 class="w-full border rounded p-2 text-xs font-mono dark:border-slate-700 dark:bg-slate-900"
