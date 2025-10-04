@@ -1,7 +1,7 @@
 import { createSignal, JSX } from 'solid-js'
 
 type Props = {
-  onCreate: (org: string) => void
+  onCreate: (org: string, cpNodes?: string, workerNodes?: string) => void
   onCancel: () => void
 }
 
@@ -57,7 +57,11 @@ export default function OrgWizard(props: Props): JSX.Element {
       <div class="mt-4 flex gap-2">
         <button
           class="px-3 py-2 bg-indigo-600 text-white rounded"
-          onClick={() => org().trim() && props.onCreate(org().trim())}
+          onClick={() => {
+            const o = org().trim()
+            if (!o) return
+            props.onCreate(o, cpNodes().trim(), workerNodes().trim())
+          }}
         >
           Create
         </button>

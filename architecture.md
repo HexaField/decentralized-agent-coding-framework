@@ -125,8 +125,9 @@ sequenceDiagram
     K-->>OP: Deployment Available
     OP->>K: Update AgentTask.status
     AP->>O: register/heartbeat/logs
-    O-->>D: task/agent state; editor port-forward helpers
-    D->>O: /agents/editor/open; D<->O: /embed/orchestrator/:port (reverse proxy)
+    O-->>D: task/agent state, editor port-forward helpers
+    D->>O: /agents/editor/open
+    D-->O: /embed/orchestrator/:port (reverse proxy)
 ```
 
 ## Request/flow traces

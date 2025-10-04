@@ -90,6 +90,42 @@ const ALLOW_ORIGINS = (process.env.ALLOW_ORIGINS || '')
   .map((s) => s.trim())
   .filter(Boolean)
 
+// CORS (scoped): allow Vite dev UI and any explicit ALLOW_ORIGINS
+app.use((req, res, next) => {
+  try {
+    const origin = (req.headers.origin as string) || ''
+    if (origin) {
+      const devOrigins: string[] = []
+      const viteUrl = (process.env.VITE_DEV_URL || '').trim()
+      if (viteUrl) devOrigins.push(viteUrl.replace(/\/$/, ''))
+      // Always allow common localhost dev origins (handy when server runs via compose without UI_DEV)
+      try {
+        const u = new URL(origin)
+        if ((u.hostname === 'localhost' || u.hostname === '127.0.0.1') && u.port === '5173') {
+          devOrigins.push(`${u.protocol}//${u.hostname}:5173`)
+        }
+      } catch {}
+      devOrigins.push('https://localhost:5173', 'https://127.0.0.1:5173')
+      const explicit = ALLOW_ORIGINS
+      const allowed = new Set<string>([...devOrigins, ...explicit])
+      // Normalize origin for comparison (strip trailing slash)
+      const want = origin.replace(/\/$/, '')
+      if (allowed.has(want)) {
+        res.setHeader('Access-Control-Allow-Origin', origin)
+        res.setHeader('Vary', 'Origin')
+        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+        res.setHeader(
+          'Access-Control-Allow-Headers',
+          'Content-Type, X-Auth-Token, X-Requested-With'
+        )
+        res.setHeader('Access-Control-Allow-Credentials', 'true')
+        if (req.method === 'OPTIONS') return res.status(204).end()
+      }
+    }
+  } catch {}
+  next()
+})
+
 // Simple in-memory chat backlog for demo endpoints
 const chats: { global: Array<{ role: string; text: string }> } = { global: [] }
 
@@ -202,7 +238,9 @@ async function ensureTailscaleService(
   if (ver.code === 0) return true
   if (process.platform !== 'darwin' && linuxWithSudo) {
     if (log) log('Attempting to start tailscaled via systemctl…')
-    await runQuick('sudo', ['-n', 'systemctl', 'enable', '--now', 'tailscaled'], { timeoutMs: 8000 })
+    await runQuick('sudo', ['-n', 'systemctl', 'enable', '--now', 'tailscaled'], {
+      timeoutMs: 8000,
+    })
     const v2 = await runQuick('tailscale', ['version'], { timeoutMs: 3000 })
     return v2.code === 0
   }
@@ -252,14 +290,16 @@ function getOrchBase(): string {
   const override = (global as any).__ORCH_OVERRIDE__
   const envUrl = process.env.ORCHESTRATOR_URL
   const base =
-    (typeof override === 'string' && override) ||
-    (envUrl && envUrl.length ? envUrl : ORCH_URL)
+    (typeof override === 'string' && override) || (envUrl && envUrl.length ? envUrl : ORCH_URL)
   return normalizeOrchUrl(base)
 }
 
 function getOrchAuthHeader(): Record<string, string> {
   const token =
-    process.env.ORCHESTRATOR_TOKEN || process.env.ORCH_TOKEN || process.env.ORCHESTRATOR_API_TOKEN || ORCH_TOKEN
+    process.env.ORCHESTRATOR_TOKEN ||
+    process.env.ORCH_TOKEN ||
+    process.env.ORCHESTRATOR_API_TOKEN ||
+    ORCH_TOKEN
   return token ? { 'X-Auth-Token': token } : {}
 }
 
@@ -458,14 +498,16 @@ async function setupStream(req: any, res: any) {
       )
     } catch {}
 
-  if (flow === 'create') {
+    if (flow === 'create') {
       // 2) Per-org steps: discover nodes via Tailscale and bootstrap with Talos
       const orgs: string[] = []
       if (orgParam) orgs.push(orgParam)
       else {
         try {
           const db = await getDB()
-          const rows: Array<{ name: string }> = await db.all('SELECT name FROM orgs ORDER BY id ASC')
+          const rows: Array<{ name: string }> = await db.all(
+            'SELECT name FROM orgs ORDER BY id ASC'
+          )
           rows.forEach((r) => orgs.push(r.name))
         } catch {}
       }
@@ -513,15 +555,31 @@ async function setupStream(req: any, res: any) {
           }
         } catch {}
         if (!env[`${o.toUpperCase()}_CP_NODES`]) {
-          send('hint', `No control-plane nodes for '${o}'. Name nodes '${o}-cp-*' or tag with 'cp'.`)
+          send(
+            'hint',
+            `No control-plane nodes for '${o}'. Name nodes '${o}-cp-*' or tag with 'cp'.`
+          )
         }
-        await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o], env)
-        await runStep(`Install Tailscale Operator (${o})`, resolveScript('install_tailscale_operator.sh'), [o])
+        await runStep(
+          `Talos org bootstrap (${o})`,
+          resolveScript('talos_org_bootstrap.sh'),
+          [o],
+          env
+        )
+        await runStep(
+          `Install Tailscale Operator (${o})`,
+          resolveScript('install_tailscale_operator.sh'),
+          [o]
+        )
         await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
       }
-      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
+      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
+        'up',
+      ])
     } else if (flow === 'connect') {
-      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
+      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
+        'up',
+      ])
     }
 
     send('done', { ok: true })
@@ -537,14 +595,16 @@ app.post('/api/setup/stream', setupStream)
 app.post('/api/orgs', async (req, res) => {
   if ((req.headers['x-auth-token'] as string) !== TOKEN)
     return res.status(401).json({ ok: false, error: 'unauthorized' })
-  const name = (req.body && String(req.body.name || '').trim()) || ''
+  const bodyIn = (typeof req.body === 'object' && req.body) || {}
+  const name = (bodyIn && String((bodyIn as any).name || '').trim()) || ''
   if (!name) return res.status(400).json({ ok: false, error: 'name required' })
   try {
     const db = await getDB()
     await db.run('INSERT INTO orgs(name) VALUES (?)', name)
     const row = await db.get('SELECT id, name, created_at FROM orgs WHERE name=?', name)
-    // No placeholder files are created; cluster provisioning is a separate step.
-    res.json({ ok: true, org: row })
+    // Suggest SSE provision stream URL in response so UI can attach for progress.
+    const provUrl = `/api/orgs/${encodeURIComponent(name)}/provision/stream`
+    res.json({ ok: true, org: row, provisionStream: provUrl })
   } catch (e: any) {
     if (String(e && e.message).includes('UNIQUE'))
       return res.status(409).json({ ok: false, error: 'exists' })
@@ -581,23 +641,19 @@ app.get('/api/orgs/:name/kubeconfig/status', async (req, res) => {
     const name = String(req.params.name || '').trim()
     if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
     const p = path.join(stateBaseDir(), 'kube', `${name}.config`)
-    const exists = fs.existsSync(p)
-    let real = exists
-    if (exists) {
+    const existsOnDisk = fs.existsSync(p)
+    let placeholder = false
+    let valid = false
+    if (existsOnDisk) {
       try {
         const text = fs.readFileSync(p, 'utf8')
         const meaningful = text.split(/\r?\n/).some((ln) => ln.trim() && !ln.trim().startsWith('#'))
-        const placeholder = /GENERATED_PLACEHOLDER/i.test(text) || /PLACEHOLDER-TOKEN/i.test(text)
+        placeholder = /GENERATED_PLACEHOLDER/i.test(text) || /PLACEHOLDER-TOKEN/i.test(text)
         const badServer = /server:\s*https?:\/\/(0\.0\.0\.0|127\.0\.0\.1):/i.test(text)
-        real =
-          meaningful &&
-          /apiVersion:\s*v1/i.test(text) &&
-          /kind:\s*Config/i.test(text) &&
-          !placeholder &&
-          !badServer
+        valid = meaningful && /apiVersion:\s*v1/i.test(text) && /kind:\s*Config/i.test(text) && !placeholder && !badServer
       } catch {}
     }
-    res.json({ ok: true, exists: real, path: real ? p : '' })
+    res.json({ ok: true, exists: existsOnDisk, placeholder, valid, path: existsOnDisk ? p : '' })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
   }
@@ -629,18 +685,18 @@ app.get('/api/orgs/:name/talosconfig/status', async (req, res) => {
     const name = String(req.params.name || '').trim()
     if (!name) return res.status(400).json({ ok: false, error: 'bad name' })
     const p = path.join(stateBaseDir(), 'talos', `${name}.talosconfig`)
-    const exists = fs.existsSync(p)
-    let real = exists
-    if (exists) {
+    const existsOnDisk = fs.existsSync(p)
+    let placeholder = false
+    let valid = false
+    if (existsOnDisk) {
       try {
         const text = fs.readFileSync(p, 'utf8')
         const meaningful = text.split(/\r?\n/).some((ln) => ln.trim() && !ln.trim().startsWith('#'))
-        const placeholder =
-          /GENERATED_PLACEHOLDER/i.test(text) || /PLACEHOLDER-(CA|CRT|KEY)/i.test(text)
-        real = meaningful && /contexts?:/i.test(text) && !placeholder
+        placeholder = /GENERATED_PLACEHOLDER/i.test(text) || /PLACEHOLDER-(CA|CRT|KEY)/i.test(text)
+        valid = meaningful && /contexts?:/i.test(text) && !placeholder
       } catch {}
     }
-    res.json({ ok: true, exists: real, path: real ? p : '' })
+    res.json({ ok: true, exists: existsOnDisk, placeholder, valid, path: existsOnDisk ? p : '' })
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e) })
   }
@@ -748,9 +804,13 @@ app.post('/api/orgs/:name/bootstrap', async (req, res) => {
     if (upstream.ok) return res.status(200).json(payload)
     // Propagate 4xx/5xx from orchestrator instead of masking as 502
     const code = Math.max(400, Math.min(599, upstream.status || 502))
-    return res.status(code).json(payload && typeof payload === 'object'
-      ? payload
-      : { ok: false, error: text || 'orchestrator bootstrap failed' })
+    return res
+      .status(code)
+      .json(
+        payload && typeof payload === 'object'
+          ? payload
+          : { ok: false, error: text || 'orchestrator bootstrap failed' }
+      )
   } catch (e: any) {
     // Network or unexpected error – keep as 502
     const msg = e?.message ? String(e.message) : String(e)
@@ -1215,6 +1275,175 @@ app.get('/api/setup/status', async (req, res) => {
     res.status(200).json({ ok: false, connected: false, error: String(e) })
   }
 })
+
+// Provision an org end-to-end: Talos bootstrap via orchestrator then deploy orchestrator in-cluster.
+app.get('/api/orgs/:name/provision/stream', async (req, res) => {
+  // Allow token via header or query (EventSource cannot set headers)
+  const qtok = (req.query && (req.query as any).token) || ''
+  const presented = (req.headers['x-auth-token'] as string) || String(qtok || '')
+  if (presented !== TOKEN) return res.status(401).end('unauthorized')
+
+  const org = String(req.params.name || '').trim()
+  if (!org) return res.status(400).end('bad org')
+  // Optional node lists via query (space or comma separated)
+  const cpRaw = String((req.query as any).cpNodes || '')
+  const wkRaw = String((req.query as any).workerNodes || '')
+  let cpNodes: string[] = cpRaw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  let workerNodes: string[] = wkRaw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const send = (event: string, data: any) => {
+    try {
+      res.write(`event: ${event}\n`)
+      res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`)
+    } catch {}
+  }
+  const done = (ok: boolean, extra?: any) => {
+    send('done', { ok, ...(extra || {}) })
+    res.end()
+  }
+
+  // Helper: discover nodes via tailscale naming/tagging conventions
+  async function discoverNodes() {
+    try {
+      const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 6000 })
+      if (r.code !== 0 || !r.out) return
+      const j = JSON.parse(r.out)
+      const peers = (j && (j.Peers || j.Peer || [])) || []
+      const self = j && j.Self ? [j.Self] : []
+      const all = Array.isArray(peers) ? peers.concat(self) : self
+      const nameMatches = (hn: string, pref: string) => hn.toLowerCase().startsWith(pref)
+      const tagsOf = (p: any) => (p && (p.Tags || p.Tag || p.forcedTags || [])) || []
+      const ipv4 = (p: any): string =>
+        p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
+          ? Array.isArray(p.TailscaleIPs)
+            ? p.TailscaleIPs.find((x: string) => x.includes('.')) || ''
+            : String(p.TailAddr || '').includes('.')
+              ? String(p.TailAddr)
+              : ''
+          : ''
+      if (!cpNodes.length || !workerNodes.length) {
+        const cp: string[] = [...cpNodes]
+        const wk: string[] = [...workerNodes]
+        for (const p of all) {
+          const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '')
+          const ip = ipv4(p)
+          if (!ip) continue
+          if (nameMatches(hn, `${org}-cp-`)) cp.push(ip)
+          else if (nameMatches(hn, `${org}-worker-`)) wk.push(ip)
+        }
+        if (!cp.length || !wk.length) {
+          for (const p of all) {
+            const ip = ipv4(p)
+            if (!ip) continue
+            const tags = tagsOf(p).map((t: any) => String(t))
+            if (!cp.length && tags.some((t: any) => /(^|:)cp($|:)/i.test(t))) cp.push(ip)
+            if (!wk.length && tags.some((t: any) => /(^|:)worker($|:)/i.test(t))) wk.push(ip)
+          }
+        }
+        cpNodes = Array.from(new Set(cp))
+        workerNodes = Array.from(new Set(wk))
+      }
+    } catch (e: any) {
+      send('log', `discovery error: ${String(e?.message || e)}`)
+    }
+  }
+
+  try {
+    send('begin', { org })
+    send('status', 'Discovering nodes…')
+    await discoverNodes()
+    if (!cpNodes.length) {
+      send('error', `No control-plane nodes discovered for '${org}'. Name nodes '${org}-cp-*' or tag with 'cp'.`)
+      return done(false)
+    }
+    send('status', `Using cpNodes=${cpNodes.join(' ')} workerNodes=${workerNodes.join(' ')}`)
+
+    // Bootstrap via orchestrator
+    send('step', { title: 'Talos bootstrap via orchestrator' })
+    try {
+      const headers: Record<string, string> = getOrchAuthHeader()
+      const upstream = await fetch(`${getOrchBase()}/orgs/bootstrap`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ org, cpNodes, workerNodes }),
+      } as any)
+      const text = await upstream.text()
+      if (!upstream.ok) {
+        send('stepError', { title: 'Talos bootstrap via orchestrator', code: upstream.status })
+        send('error', text)
+        return done(false)
+      }
+      let payload: any = {}
+      try { payload = JSON.parse(text) } catch { payload = { text } }
+      send('stepDone', { title: 'Talos bootstrap via orchestrator', code: 0, payload })
+    } catch (e: any) {
+      send('stepError', { title: 'Talos bootstrap via orchestrator', code: 1 })
+      send('error', String(e?.message || e))
+      return done(false)
+    }
+
+    // Deploy orchestrator into the cluster
+    send('step', { title: 'Deploy orchestrator to cluster' })
+    try {
+      const hereDir = path.dirname(new URL(import.meta.url).pathname)
+      const repoRoot = path.resolve(hereDir, '..', '..')
+      const manifest = path.join(repoRoot, 'src', 'k8s', 'orchestrator', 'deployment.yaml')
+      const kubeCfg = path.join(stateBaseDir(), 'kube', `${org}.config`)
+      const apply = await runQuick('kubectl', [
+        '--kubeconfig',
+        kubeCfg,
+        'apply',
+        '-f',
+        manifest,
+        '-n',
+        'mvp-agents',
+        '--validate=false',
+      ])
+      if (apply.code !== 0) {
+        send('stepError', { title: 'Deploy orchestrator to cluster', code: apply.code })
+        send('error', (apply.out || '').toString().slice(0, 1000))
+        return done(false)
+      }
+      const rollout = await runQuick('kubectl', [
+        '--kubeconfig',
+        kubeCfg,
+        'rollout',
+        'status',
+        'deployment/orchestrator',
+        '-n',
+        'mvp-agents',
+        '--timeout=60s',
+      ])
+      if (rollout.code !== 0) {
+        send('stepError', { title: 'Deploy orchestrator to cluster', code: rollout.code })
+        send('error', (rollout.out || '').toString().slice(0, 1000))
+        return done(false)
+      }
+      const url = 'http://orchestrator.mvp-agents.svc.cluster.local:8080'
+      send('stepDone', { title: 'Deploy orchestrator to cluster', code: 0, url })
+      // Hint the UI with orchestrator URL
+      send('hint', `Orchestrator service: ${url}`)
+    } catch (e: any) {
+      send('stepError', { title: 'Deploy orchestrator to cluster', code: 1 })
+      send('error', String(e?.message || e))
+      return done(false)
+    }
+
+    done(true)
+  } catch (e: any) {
+    send('error', String(e?.message || e))
+    done(false)
+  }
+})
 // SSE proxy: agents
 app.get('/api/stream/agent', (req, res) => {
   const name = String(req.query.name || '')
@@ -1363,7 +1592,6 @@ app.post('/api/debug/orchestrator-url', (req, res) => {
     res.status(500).json({ error: String(e) })
   }
 })
-
 
 // Validate setup prerequisites and env; returns guidance list
 app.post('/api/setup/validate', (req, res) => {

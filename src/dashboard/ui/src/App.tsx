@@ -102,6 +102,19 @@ export default function App() {
   }
   const [agents, setAgents] = createSignal<Agent[]>([])
 
+  // Provisioning (org bootstrap) progress panel
+  const [provOrg, setProvOrg] = createSignal<string>('')
+  const [provLines, setProvLines] = createSignal<string[]>([])
+  const [provStatus, setProvStatus] = createSignal<'idle' | 'running' | 'ok' | 'error'>('idle')
+  const [provStep, setProvStep] = createSignal<string>('')
+  const [provErr, setProvErr] = createSignal<string>('')
+  const addProv = (line: string) =>
+    setProvLines((prev) => {
+      const out = [...prev, line]
+      if (out.length > 500) out.shift()
+      return out
+    })
+
   // Global chat (collapsible right panel)
   const [isChatOpen, setIsChatOpen] = createSignal(true)
   const [chatInput, setChatInput] = createSignal('')
@@ -501,23 +514,139 @@ export default function App() {
         <Show when={!validated() || showOrgWizard() || showSetup() !== 'none' || showOrgManager()}>
           <div class="absolute inset-0 z-20 bg-white/70 dark:bg-black/60 backdrop-blur-sm flex items-start justify-center p-6 overflow-auto">
             <div class="bg-white dark:bg-slate-900 rounded shadow-xl w-full max-w-4xl">
+              {/* Provisioning progress */}
+              <Show when={provStatus() !== 'idle'}>
+                <div class="p-4 border-b dark:border-slate-700">
+                  <div class="flex items-center gap-2">
+                    <div class="text-lg font-semibold">Provisioning {provOrg() || ''}</div>
+                    <Show when={provStatus() === 'running'}>
+                      <span class="ml-2 text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200">
+                        Running
+                      </span>
+                    </Show>
+                    <Show when={provStatus() === 'ok'}>
+                      <span class="ml-2 text-xs px-2 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200">
+                        Completed
+                      </span>
+                    </Show>
+                    <Show when={provStatus() === 'error'}>
+                      <span class="ml-2 text-xs px-2 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200">
+                        Error
+                      </span>
+                    </Show>
+                    <div class="ml-auto">
+                      <button
+                        class="px-2 py-1 border rounded text-xs dark:border-slate-700"
+                        onClick={() => {
+                          setProvStatus('idle')
+                          setProvOrg('')
+                          setProvLines([])
+                          setProvStep('')
+                          setProvErr('')
+                        }}
+                        disabled={provStatus() === 'running'}
+                        title={provStatus() === 'running' ? 'Wait for completion' : 'Close'}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                  <Show when={provStep()}>
+                    <div class="mt-1 text-sm opacity-70">Step: {provStep()}</div>
+                  </Show>
+                  <Show when={provErr()}>
+                    <div class="mt-2 text-sm text-red-600">{provErr()}</div>
+                  </Show>
+                  <div class="mt-3 h-48 overflow-auto border rounded p-2 text-xs dark:border-slate-700 dark:bg-slate-800">
+                    <For each={provLines()}>
+                      {(ln) => <div class="whitespace-pre-wrap leading-tight">{ln}</div>}
+                    </For>
+                  </div>
+                </div>
+              </Show>
               <Show when={showOrgWizard()}>
                 <OrgWizard
-                  onCreate={async (name) => {
+                  onCreate={async (name, cpRaw, wkRaw) => {
                     setShowOrgWizard(false)
                     try {
-                      const r = await fetch(`${SERVER_BASE}/api/orgs`, {
+                      const resp = await fetch(`${SERVER_BASE}/api/orgs`, {
                         method: 'POST',
                         headers: {
                           'Content-Type': 'application/json',
                           'X-Auth-Token': dashboardToken,
                         },
                         body: JSON.stringify({ name }),
-                      }).then((x) => x.json())
-                      if (r.ok) {
+                      })
+                      const r = await resp.json()
+                      if (r && r.ok) {
                         const names = [...orgs(), name]
                         setOrgs(names)
                         setOrg(name)
+                        // Attach to provision SSE stream and show progress overlay
+                        const url = new URL(
+                          `${SERVER_BASE}${r.provisionStream || `/api/orgs/${encodeURIComponent(name)}/provision/stream`}`
+                        )
+                        url.searchParams.set('token', dashboardToken)
+                        if (cpRaw && cpRaw.trim()) url.searchParams.set('cpNodes', cpRaw.trim())
+                        if (wkRaw && wkRaw.trim()) url.searchParams.set('workerNodes', wkRaw.trim())
+                        const es = new EventSource(url.toString(), { withCredentials: false })
+                        setShowOrgManager(true)
+                        setProvOrg(name)
+                        setProvLines([])
+                        setProvErr('')
+                        setProvStep('')
+                        setProvStatus('running')
+                        es.addEventListener('begin', () => addProv(`Provisioning ${name}…`))
+                        es.addEventListener('status', (e) => addProv((e as MessageEvent).data))
+                        es.addEventListener('log', (e) => addProv((e as MessageEvent).data))
+                        es.addEventListener('hint', (e) => addProv((e as MessageEvent).data))
+                        es.addEventListener('step', (e) => {
+                          const d = (e as MessageEvent).data
+                          setProvStep(d)
+                          addProv(`Step: ${d}`)
+                        })
+                        es.addEventListener('stepDone', (e) =>
+                          addProv(`Done: ${(e as MessageEvent).data}`)
+                        )
+                        es.addEventListener('stepError', (e) => {
+                          const d = (e as MessageEvent).data
+                          setProvErr(String(d))
+                          setProvStatus('error')
+                          addProv(`Error: ${d}`)
+                        })
+                        es.addEventListener('error', (e) => {
+                          const d = (e as MessageEvent).data
+                          setProvErr(String(d || 'stream error'))
+                          setProvStatus('error')
+                          addProv(`Error: ${d}`)
+                        })
+                        es.addEventListener('done', async (e) => {
+                          es.close()
+                          try {
+                            await loadState()
+                          } catch {}
+                          try {
+                            await fetch(`${SERVER_BASE}/api/debug/orchestrator-url`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                url: 'http://orchestrator.mvp-agents.svc.cluster.local:8080',
+                              }),
+                            })
+                          } catch {}
+                          try {
+                            const ok = Boolean(JSON.parse((e as MessageEvent).data).ok)
+                            setProvStatus(ok ? 'ok' : 'error')
+                            addProv(`Provision ${name}: ${ok ? 'ok' : 'failed'}`)
+                            notify(
+                              ok ? 'Org provisioned' : 'Org provision failed',
+                              ok ? 'success' : 'error'
+                            )
+                          } catch {
+                            setProvStatus('error')
+                            addProv('Provision finished with unknown result')
+                          }
+                        })
                       }
                     } catch {}
                   }}
