@@ -29,13 +29,13 @@ if talosctl cluster --help >/dev/null 2>&1; then
   # If cluster already exists, skip create
   if ! talosctl cluster list | grep -q "^${NAME}\b"; then
     echo "Creating local Talos cluster '${NAME}'..."
-    talosctl cluster create "${NAME}" --workers 1 --controlplanes 1 --wait-timeout 10m
+    talosctl cluster create --name "${NAME}" --workers 1 --controlplanes 1 --wait-timeout 10m
   else
     echo "Local Talos cluster '${NAME}' exists; skipping create"
   fi
   # Export kubeconfig
   KCFG="${HOME}/.kube/${ORG}.config"
-  talosctl cluster kubeconfig "${NAME}" --force-context-name "${ORG}" --force --output "$KCFG"
+  talosctl cluster kubeconfig --name "${NAME}" --force-context-name "${ORG}" --force --output "$KCFG"
   echo "Kubeconfig: $KCFG"
   cp -f "$KCFG" "$STATE_DIR/kube/${ORG}.config"
   echo "Kubeconfig copied to $STATE_DIR/kube/${ORG}.config"

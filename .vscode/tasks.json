@@ -505,6 +505,26 @@
 				"set -e; echo 'Waiting for dashboard(:8443) and orchestrator(:18080)...'; for i in {1..90}; do curl -skf https://127.0.0.1:8443/api/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && echo 'Services healthy' && exit 0; sleep 2; done; echo 'Services not healthy in time'; exit 1"
 			],
 			"group": "test"
+		},
+		{
+			"label": "Wait for services to be healthy",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"set -e; for i in {1..60}; do curl -skf https://127.0.0.1:8443/api/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && echo ok && exit 0; sleep 2; done; echo fail; exit 1"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Wait for health endpoints",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"set -e; for i in {1..60}; do curl -skf https://127.0.0.1:8443/api/health >/dev/null 2>&1 && curl -sf http://127.0.0.1:18080/health >/dev/null 2>&1 && echo ok && exit 0; sleep 2; done; echo fail; exit 1"
+			],
+			"group": "test"
 		}
 	]
 }

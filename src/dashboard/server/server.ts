@@ -159,6 +159,49 @@ function stateBaseDir(): string {
   return dir
 }
 
+// Detect if running inside a container (best-effort)
+function inContainer(): boolean {
+  try {
+    if (process.env.DASHBOARD_IN_CONTAINER === '1') return true
+    return fs.existsSync('/.dockerenv')
+  } catch {
+    return false
+  }
+}
+
+// Compute additional kubectl global args based on kubeconfig server URL and runtime env
+function kubeGlobalArgsFor(kubeCfg: string): { extra: string[]; patchedServer?: string } {
+  const extra: string[] = []
+  let patchedServer: string | undefined
+  try {
+    const text = fs.readFileSync(kubeCfg, 'utf8')
+    const m = text.match(/\bserver:\s*(\S+)/)
+    const raw = (m && m[1]) || ''
+    if (raw) {
+      try {
+        const u = new URL(raw)
+        const host = u.hostname
+        const port = u.port
+        // Rewrite 0.0.0.0 -> 127.0.0.1
+        if (host === '0.0.0.0' && port) {
+          u.hostname = '127.0.0.1'
+          patchedServer = u.toString()
+        }
+        // When inside a container, 127.0.0.1/localhost will not hit host API; use host.docker.internal
+        if (inContainer() && (host === '127.0.0.1' || host === 'localhost') && port) {
+          u.hostname = 'host.docker.internal'
+          patchedServer = u.toString()
+        }
+        if (patchedServer) {
+          // Use kubectl global overrides instead of mutating the file; add insecure skip to avoid SAN mismatches
+          extra.push('--server', patchedServer, '--insecure-skip-tls-verify')
+        }
+      } catch {}
+    }
+  } catch {}
+  return { extra, patchedServer }
+}
+
 // SQLite DB helper with minimal schema
 let __dbPromise: Promise<Database<sqlite3.Database, sqlite3.Statement>> | null = null
 async function getDB(): Promise<Database<sqlite3.Database, sqlite3.Statement>> {
@@ -1147,6 +1190,87 @@ app.post('/api/orgs', async (req, res) => {
     // Suggest SSE provision stream URL in response so UI can attach for progress.
     const provUrl = `/api/orgs/${encodeURIComponent(name)}/provision/stream`
     res.json({ ok: true, org: row, provisionStream: provUrl })
+    // Fire-and-forget: attempt auto-deploy if kubeconfig is present or becomes available shortly
+    ;(async () => {
+      const kubeCfg = path.join(stateBaseDir(), 'kube', `${name}.config`)
+      const deadline = Date.now() + 60_000
+      // Optional: import current kubectl context into org kubeconfig if enabled
+      const allowImport = process.env.AUTO_IMPORT_KUBECONFIG_ON_CREATE === '1'
+      while (Date.now() < deadline) {
+        if (fs.existsSync(kubeCfg)) break
+        if (allowImport) {
+          try {
+            const kc = await runQuick('kubectl', [
+              'config',
+              'view',
+              '--minify',
+              '--flatten',
+              '-o',
+              'yaml',
+            ])
+            if (
+              kc.code === 0 &&
+              /apiVersion:\s*v1/i.test(kc.out) &&
+              /kind:\s*Config/i.test(kc.out)
+            ) {
+              fs.mkdirSync(path.dirname(kubeCfg), { recursive: true })
+              fs.writeFileSync(kubeCfg, kc.out)
+              break
+            }
+          } catch {}
+        }
+        await new Promise((r) => setTimeout(r, 1500))
+      }
+      if (!fs.existsSync(kubeCfg)) return
+      try {
+        const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..')
+        let manifest = path.join(repoRoot, 'src', 'k8s', 'orchestrator', 'deployment.yaml')
+        if (!fs.existsSync(manifest)) {
+          const alt = path.join('/src', 'src', 'k8s', 'orchestrator', 'deployment.yaml')
+          if (fs.existsSync(alt)) manifest = alt
+        }
+        const { extra } = kubeGlobalArgsFor(kubeCfg)
+        // Apply and rollout
+        const apply = await runQuick('kubectl', [
+          '--kubeconfig',
+          kubeCfg,
+          ...extra,
+          'apply',
+          '-f',
+          manifest,
+          '-n',
+          'mvp-agents',
+          '--validate=false',
+        ])
+        if (apply.code !== 0) {
+          console.warn('[auto-deploy] apply failed:', (apply.out || '').toString().slice(0, 500))
+          return
+        }
+        const rollout = await runQuick('kubectl', [
+          '--kubeconfig',
+          kubeCfg,
+          ...extra,
+          'rollout',
+          'status',
+          'deployment/orchestrator',
+          '-n',
+          'mvp-agents',
+          '--timeout=60s',
+        ])
+        if (rollout.code !== 0) {
+          console.warn(
+            '[auto-deploy] rollout failed:',
+            (rollout.out || '').toString().slice(0, 500)
+          )
+          return
+        }
+        console.log(`[auto-deploy] orchestrator deployed for org=${name}`)
+      } catch (e: any) {
+        try {
+          console.warn('[auto-deploy] error:', String(e?.message || e))
+        } catch {}
+      }
+    })().catch(() => {})
   } catch (e: any) {
     if (String(e && e.message).includes('UNIQUE'))
       return res.status(409).json({ ok: false, error: 'exists' })
@@ -1616,8 +1740,9 @@ app.post('/api/k8s/orchestrator/deploy', async (req, res) => {
     }
     // Quick connectivity preflight (API server reachable?)
     // Use a compatibility sequence for different kubectl versions; best-effort only
+    const globals = kubeGlobalArgsFor(kubeCfg)
     const tryCmd = async (args: string[]) =>
-      await runQuick('kubectl', ['--kubeconfig', kubeCfg, ...args])
+      await runQuick('kubectl', ['--kubeconfig', kubeCfg, ...globals.extra, ...args])
     let preOk = false
     let last = { code: 1, out: '' }
     for (const args of [
@@ -1686,26 +1811,7 @@ app.post('/api/k8s/orchestrator/deploy', async (req, res) => {
           if (m) serverUrl = m[1]
         } catch {}
         // If kubeconfig points to 0.0.0.0:PORT, rewrite to 127.0.0.1:PORT and retry once.
-        try {
-          const m2 = serverUrl.match(/^https?:\/\/(0\.0\.0\.0):(\d+)/)
-          if (m2) {
-            const port = m2[2]
-            const patched = text.replace(
-              /(\bserver:\s*)https?:\/\/0\.0\.0\.0:(\d+)/,
-              `$1https://127.0.0.1:${port}`
-            )
-            if (patched && patched !== text) {
-              fs.writeFileSync(kubeCfg, patched)
-              apiRes = await tryCmd(['api-resources', '-o', 'name', '--request-timeout=10s'])
-              if (apiRes.code === 0) {
-                serverUrl = `https://127.0.0.1:${port}`
-              } else {
-                // restore original to avoid confusion
-                fs.writeFileSync(kubeCfg, text)
-              }
-            }
-          }
-        } catch {}
+        // If we had a patched server, we already passed globals; no need to rewrite file here
         // If still failing, return error to caller with hints.
         return res.status(400).json({
           ok: false,
@@ -1722,6 +1828,7 @@ app.post('/api/k8s/orchestrator/deploy', async (req, res) => {
     const apply = await runQuick('kubectl', [
       '--kubeconfig',
       kubeCfg,
+      ...globals.extra,
       'apply',
       '-f',
       manifest,
@@ -1753,6 +1860,7 @@ app.post('/api/k8s/orchestrator/deploy', async (req, res) => {
     const rollout = await runQuick('kubectl', [
       '--kubeconfig',
       kubeCfg,
+      ...globals.extra,
       'rollout',
       'status',
       'deployment/orchestrator',
@@ -1923,9 +2031,7 @@ app.get('/api/orgs/:name/provision/stream', async (req, res) => {
         }
         if (!workerNodes.length) {
           const up = org.toUpperCase()
-          const byOrgW = (process.env[`${up}_WORKER_NODES`] || '')
-            .split(/[\s,]+/)
-            .filter(Boolean)
+          const byOrgW = (process.env[`${up}_WORKER_NODES`] || '').split(/[\s,]+/).filter(Boolean)
           if (byOrgW.length) {
             workerNodes = Array.from(new Set([...(workerNodes || []), ...byOrgW]))
             send('hint', `workerNodes resolved from environment (${up}_WORKER_NODES).`)
