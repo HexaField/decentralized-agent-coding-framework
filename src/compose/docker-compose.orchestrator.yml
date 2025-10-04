@@ -24,16 +24,24 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: /app
-    command: ["sh", "-lc", "npm ci && npx tsx server/server.ts"]
+    user: root
+    command:
+      [
+        "sh",
+        "-lc",
+        "apk add --no-cache docker-cli && npm ci && npx tsx server/server.ts",
+      ]
     environment:
       DASHBOARD_TOKEN: ${DASHBOARD_TOKEN}
       ORCHESTRATOR_URL: http://mvp-orchestrator:8080
       ORCHESTRATOR_TOKEN: ${ORCHESTRATOR_TOKEN}
       UI_DEV: "0"
+      DASHBOARD_STATE_DIR: /state
     volumes:
       - ../dashboard:/app
       - dashboard_node_modules:/app/node_modules
       - ../state:/state
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8443:8090"
     networks:
