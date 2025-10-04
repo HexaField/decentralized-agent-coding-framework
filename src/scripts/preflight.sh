@@ -37,6 +37,4 @@ if [ "$MISSING" -ne 0 ]; then
   exit 1
 fi
 
-echo "Org configuration is managed by the dashboard; skipping orgs.yaml checks."
-
 echo "Preflight OK"

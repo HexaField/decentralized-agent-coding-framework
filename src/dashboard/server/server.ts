@@ -1902,6 +1902,37 @@ app.get('/api/orgs/:name/provision/stream', async (req, res) => {
     } catch (e: any) {
       send('log', `discovery error: ${String(e?.message || e)}`)
     }
+    // Environment fallbacks (non-test only): allow pre-specified node lists when discovery yields nothing
+    try {
+      const isTest = process.env.NODE_ENV === 'test' || !!(process as any).env?.VITEST
+      if (!isTest) {
+        if (!cpNodes.length) {
+          const up = org.toUpperCase()
+          const byOrg = (process.env[`${up}_CP_NODES`] || '').split(/[\s,]+/).filter(Boolean)
+          const e2e = (process.env.E2E_CP_NODES || process.env.E2E_CP_NODES_TEST || '')
+            .split(/[\s,]+/)
+            .filter(Boolean)
+          const picked = byOrg.length ? byOrg : e2e
+          if (picked.length) {
+            cpNodes = Array.from(new Set([...(cpNodes || []), ...picked]))
+            send(
+              'hint',
+              `cpNodes resolved from environment (${byOrg.length ? `${up}_CP_NODES` : 'E2E_CP_NODES[_TEST]'}).`
+            )
+          }
+        }
+        if (!workerNodes.length) {
+          const up = org.toUpperCase()
+          const byOrgW = (process.env[`${up}_WORKER_NODES`] || '')
+            .split(/[\s,]+/)
+            .filter(Boolean)
+          if (byOrgW.length) {
+            workerNodes = Array.from(new Set([...(workerNodes || []), ...byOrgW]))
+            send('hint', `workerNodes resolved from environment (${up}_WORKER_NODES).`)
+          }
+        }
+      }
+    } catch {}
   }
 
   try {
@@ -1950,7 +1981,14 @@ app.get('/api/orgs/:name/provision/stream', async (req, res) => {
     try {
       const hereDir = path.dirname(new URL(import.meta.url).pathname)
       const repoRoot = path.resolve(hereDir, '..', '..')
-      const manifest = path.join(repoRoot, 'src', 'k8s', 'orchestrator', 'deployment.yaml')
+      // Resolve manifest in two common layouts:
+      // - When only dashboard is mounted at /app: try /app/src/... (may not exist)
+      // - When full repo is mounted at /src: try /src/src/...
+      let manifest = path.join(repoRoot, 'src', 'k8s', 'orchestrator', 'deployment.yaml')
+      if (!fs.existsSync(manifest)) {
+        const alt = path.join('/src', 'src', 'k8s', 'orchestrator', 'deployment.yaml')
+        if (fs.existsSync(alt)) manifest = alt
+      }
       const kubeCfg = path.join(stateBaseDir(), 'kube', `${org}.config`)
       const apply = await runQuick('kubectl', [
         '--kubeconfig',
