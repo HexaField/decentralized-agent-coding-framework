@@ -34,7 +34,7 @@ graph TD
     subgraph OrgCluster["Org Cluster (Talos per org)"]
       A["Agent Pod (Go)"]
       CS["code-server :8443"]
-      ST["/state (last_pr.json)/"]
+      ST["~/.guildnet/state (last_pr.json)"]
       A --> CS
       A --> ST
       AT["AgentTask (CRD)"]
@@ -63,7 +63,7 @@ graph TD
   - Agent pod starts in the org cluster
   - Agent pulls context and runs task-specific logic
   - Agent exposes code-server on :8443 for live editing
-  - Agent writes artifacts to /state (e.g., last_pr.json)
+  - Agent writes artifacts to ~/.guildnet/state (e.g., last_pr.json)
 - Artifacts surfacing
   - Dashboard surfaces agent artifacts and status where available
 
@@ -72,14 +72,14 @@ graph TD
 - Organizations
   - Org configuration is generated via the Dashboard and Orchestrator through the UI.
   - No hardcoded `orgs.yaml` is required in the repo; an optional `orgs.example.yaml` illustrates the shape.
-  - Generated kubeconfigs are written under `/state/kube/<org>.config` for internal use.
+  - Generated kubeconfigs are written under `~/.guildnet/state/kube/<org>.config` for internal use.
 - Orchestrator
   - Example config at src/configs/agent.example.yaml (agent-side) and orchestrator configs under orchestrator/configs
 - Dashboard
   - Certs for local TLS in src/dashboard/certs (used for dev/test)
-  - Minimal transient state under ./state (e.g., dashboard.db during dev/tests)
+  - Minimal state under ~/.guildnet/state (e.g., dashboard.db, kube/talos configs)
 - Agent
-  - Writes state/artifacts under /state inside the environment
+  - Writes state/artifacts under ~/.guildnet/state inside the environment
   - Exposes code-server on port 8443 via a Service; the Orchestrator can port-forward for browser access
 
 ## Networking and security
@@ -106,4 +106,7 @@ graph TD
   - Persist tasks/agents and artifacts (beyond in-memory + ad-hoc files)
   - Add authentication, RBAC, and peer lifecycle management
   - Enrich artifact surfacing in the Dashboard (e.g., last PR, logs, status)
-````
+
+```
+
+```

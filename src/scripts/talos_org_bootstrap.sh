@@ -51,7 +51,7 @@ KUBECONFIG="$KCFG" kubectl get nodes -o wide
 echo "Kubeconfig: $KCFG (context: $ORG)"
 
 # Also copy kubeconfig into the shared state volume used by containers
-STATE_DIR=$(cd "$(dirname "$0")/.." && pwd)/state
+STATE_DIR="${HOME:-/root}/.guildnet/state"
 mkdir -p "$STATE_DIR/kube"
 cp -f "$KCFG" "$STATE_DIR/kube/${ORG}.config"
 echo "Kubeconfig copied to $STATE_DIR/kube/${ORG}.config for orchestrator access"

@@ -47,14 +47,4 @@ export async function dashboardReachable(): Promise<boolean> {
   }
 }
 
-// Force dashboard server to use a writable state dir for tests if not already set
-if (!process.env.HEXA_STATE_DIR && !process.env.DASHBOARD_STATE_DIR) {
-  try {
-    const os = await import('node:os')
-    const path = await import('node:path')
-    const fs = await import('node:fs')
-    const dir = path.join(os.tmpdir(), 'hexa-state-e2e')
-    fs.mkdirSync(dir, { recursive: true })
-    process.env.DASHBOARD_STATE_DIR = dir
-  } catch {}
-}
+// Tests no longer override state dir; server uses ~/.guildnet/state exclusively.

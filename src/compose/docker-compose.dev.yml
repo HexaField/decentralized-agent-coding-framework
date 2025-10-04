@@ -3,11 +3,11 @@ services:
   dashboard:
     image: node:20-alpine
     working_dir: /app
-    command: ["node","server/server.js"]
+    command: ["node", "server/server.js"]
     environment:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
     volumes:
       - ../dashboard:/app
-      - ../state:/state
+      - ${HOME:-~}/.guildnet/state:/state
     ports:
       - "8090:8090"

@@ -13,15 +13,14 @@ import (
 )
 
 // KubeconfigPathForOrg resolves kubeconfig for a given org.
-// Preference: env KUBECONFIG -> /state/kube/<org>.config -> ~/.kube/<org>.config
+// Preference: env KUBECONFIG -> ~/.guildnet/state/kube/<org>.config -> ~/.kube/<org>.config
 func KubeconfigPathForOrg(org string) string {
     if kc := os.Getenv("KUBECONFIG"); kc != "" {
         if _, err := os.Stat(kc); err == nil { return kc }
     }
-    state := filepath.Join("/state/kube", org+".config")
+    home, _ := os.UserHomeDir(); if home == "" { home = "/root" }
+    state := filepath.Join(home, ".guildnet", "state", "kube", org+".config")
     if _, err := os.Stat(state); err == nil { return state }
-    home, _ := os.UserHomeDir()
-    if home == "" { home = "/root" }
     homeCfg := filepath.Join(home, ".kube", org+".config")
     return homeCfg
 }

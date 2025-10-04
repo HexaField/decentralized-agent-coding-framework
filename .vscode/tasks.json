@@ -1,0 +1,35 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "CI: Build/test orchestrator and dashboard",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/orchestrator/app && go build ./... && go test ./... && cd ../../dashboard && npm -s ci >/dev/null 2>&1 || npm -s install && npm -s test --silent"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build and test orchestrator (CRD-only)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/orchestrator/app && go build ./... && go test ./..."
+			],
+			"group": "build"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - final check",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		}
+	]
+}

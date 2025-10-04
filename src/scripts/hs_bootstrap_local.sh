@@ -16,8 +16,8 @@ export HEADSCALE_URL="http://${HEADSCALE_BIND_IP}:${HEADSCALE_PORT}"
 
 echo "Starting local Headscale on ${HEADSCALE_BIND_IP}:${HEADSCALE_PORT}..."
 docker rm -f headscale-local >/dev/null 2>&1 || true
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONF_DIR="${ROOT_DIR}/_tmp/headscale"
+HOME_DIR="${HOME:-/root}"
+CONF_DIR="${HOME_DIR}/.guildnet/state/_tmp/headscale"
 mkdir -p "${CONF_DIR}"
 cat > "${CONF_DIR}/config.yaml" <<YAML
 server_url: ${HEADSCALE_URL}

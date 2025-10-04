@@ -39,10 +39,10 @@ bash src/scripts/start_orchestrator.sh up
 The Create flow performs preflight checks and can bootstrap org clusters, install the Tailscale Operator, and deploy a small demo app.
 
 3) Bootstrap or provide Talos config, then generate kubeconfig (GUI; once per org)
-- In the dashboard Org Manager, you can now Bootstrap a cluster: select the org, enter control-plane node IPs (and optional workers), and click Bootstrap. The orchestrator runs `talosctl gen config`, applies configs to nodes, bootstraps the cluster, persists `/state/talos/<org>.talosconfig`, and writes `/state/kube/<org>.config`.
+- In the dashboard Org Manager, you can now Bootstrap a cluster: select the org, enter control-plane node IPs (and optional workers), and click Bootstrap. The orchestrator runs `talosctl gen config`, applies configs to nodes, bootstraps the cluster, persists `~/.guildnet/state/talos/<org>.talosconfig`, and writes `~/.guildnet/state/kube/<org>.config`.
 - Alternatively, upload or paste an existing Talos config, then enter the Talos endpoint (IP/DNS) and click “Generate kubeconfig”.
 
-Note: When a new org is created, placeholder files are auto-created at `/state/talos/<org>.talosconfig` and `/state/kube/<org>.config` using templates in `src/configs/templates/`. The dashboard treats placeholders as “missing” until they contain real content. With Bootstrap, these become real automatically; otherwise upload a Talos config and then generate the kubeconfig.
+Note: When a new org is created, placeholder files are auto-created at `~/.guildnet/state/talos/<org>.talosconfig` and `~/.guildnet/state/kube/<org>.config` using templates in `src/configs/templates/`. The dashboard treats placeholders as “missing” until they contain real content. With Bootstrap, these become real automatically; otherwise upload a Talos config and then generate the kubeconfig.
 
 4) Install the AgentTask CRD and Operator into the org cluster (one-time per cluster)
 ```bash
@@ -69,8 +69,8 @@ Note: tokens from your `.env` (DASHBOARD_TOKEN, ORCHESTRATOR_TOKEN) gate mutatin
 docker rm -f headscale-local 2>/dev/null || true
 docker volume rm headscale-data 2>/dev/null || true
 docker network ls --format '{{.Name}}' | grep -E 'tailscale|headscale' | xargs -r docker network rm
-rm -rf ./src/_tmp/headscale
-rm -f ./state/dashboard.db
+rm -rf ~/.guildnet/state/_tmp/headscale
+rm -f ~/.guildnet/state/dashboard.db
 
 Tailscale teardown (optional)
 

@@ -196,30 +196,14 @@ function getDB() {
 
 // Helpers: small process runners and platform actions
 // Resolve a writable base directory for persistent state.
-// Order: HEXA_STATE_DIR or DASHBOARD_STATE_DIR -> /state -> ~/.hexa/state -> ./.hexa/state
+// State lives under ~/.guildnet/state; containers map host ${HOME}/.guildnet/state to /state
 function stateBaseDir(): string {
-  const prefer = process.env.HEXA_STATE_DIR || process.env.DASHBOARD_STATE_DIR
-  if (prefer) {
-    try {
-      fs.mkdirSync(prefer, { recursive: true })
-      return prefer
-    } catch {}
-  }
+  const home = process.env.HOME || process.env.USERPROFILE || '.'
+  const dir = path.join(home, '.guildnet', 'state')
   try {
-    fs.mkdirSync('/state', { recursive: true })
-    return '/state'
-  } catch {}
-  try {
-    const home = process.env.HOME || process.env.USERPROFILE || '.'
-    const dir = path.join(home, '.hexa', 'state')
     fs.mkdirSync(dir, { recursive: true })
-    return dir
   } catch {}
-  const fallback = path.resolve(process.cwd(), '.hexa', 'state')
-  try {
-    fs.mkdirSync(fallback, { recursive: true })
-  } catch {}
-  return fallback
+  return dir
 }
 async function runQuick(cmd: string, args: string[], opts: { timeoutMs?: number } = {}) {
   return await new Promise<{ code: number; out: string }>((resolve) => {
@@ -463,7 +447,7 @@ app.post('/api/orgs', async (req, res) => {
         } catch {}
       }
       if (endpoint) {
-        // Call orchestrator to generate kubeconfig in shared /state
+        // Ask orchestrator to generate kubeconfig; it writes to ~/.guildnet/state/kube
         const headers: Record<string, string> = { 'Content-Type': 'application/json' }
         if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
         try {
@@ -710,7 +694,7 @@ app.get('/api/state', async (req, res) => {
     ])
     let pr: any = null
     try {
-      const p = path.join('/state', 'radicle', 'last_pr.json')
+      const p = path.join(stateBaseDir(), 'radicle', 'last_pr.json')
       if (fs.existsSync(p)) pr = JSON.parse(fs.readFileSync(p, 'utf8'))
     } catch {}
     res.json({ tasks, agents, clusters: [], prs: pr ? [pr] : [] })
@@ -998,6 +982,7 @@ app.get('/api/debug/stream', async (req, res) => {
       fetchJSON(`${ORCH_URL}/tasks`, { headers }).catch((e) => ({ error: String(e), tasks: [] })),
       fetchJSON(`${ORCH_URL}/agents`, { headers }).catch((e) => ({ error: String(e), agents: [] })),
     ])
+    const home = process.env.HOME || '/root'
     send('config', {
       server: 'dashboard',
       port: PORT,
@@ -1006,8 +991,8 @@ app.get('/api/debug/stream', async (req, res) => {
       uiDev: UI_DEV,
       corsOrigins: ALLOW_ORIGINS,
       kubeconfigHints: {
-        statePath: `/state/kube/<org>.config`,
-        homePath: `${process.env.HOME || '/root'}/.kube/<org>.config`,
+        statePath: `${stateBaseDir()}/kube/<org>.config`,
+        homePath: `${home}/.kube/<org>.config`,
       },
     })
     send('status', { message: 'connected' })
@@ -1141,7 +1126,7 @@ app.get('/api/setup/stream', async (req, res) => {
       let effectiveHsUrl = HS_URL || ''
       if (!effectiveHsUrl && effectiveMode === 'local') {
         try {
-          const cfgPath = path.join(srcDir, '_tmp', 'headscale', 'config.yaml')
+          const cfgPath = path.join(stateBaseDir(), '_tmp', 'headscale', 'config.yaml')
           const text = fs.readFileSync(cfgPath, 'utf8')
           const m = text.match(/server_url:\s*(\S+)/)
           if (m) effectiveHsUrl = m[1]
