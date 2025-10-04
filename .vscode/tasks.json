@@ -154,6 +154,96 @@
 				"cd src/dashboard && npm -s test --silent"
 			],
 			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - quick",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - final",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (npm test) - final check 2",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Re-run dashboard tests to verify 4xx propagation",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard unit tests only (skip E2E)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Final: run dashboard tests (unit only)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests again after gating E2E",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && vitest run server/bootstrap.proxy.test.ts --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (expect only proxy to run)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (E2E) against local server",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && DASHBOARD_URL_TEST=https://127.0.0.1:8090 DASHBOARD_TOKEN=dashboard-secret RUN_TAILSCALE_E2E=1 TEST_FAST_SETUP=1 npm -s test --silent"
+			],
+			"group": "test"
 		}
 	]
 }

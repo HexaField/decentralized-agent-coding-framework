@@ -84,6 +84,185 @@ const proxy = httpProxy.createProxyServer({ ws: true, changeOrigin: true, xfwd: 
 const CS_AUTH_HEADER = process.env.CODE_SERVER_AUTH_HEADER || 'X-Agent-Auth'
 const CS_AUTH_TOKEN = process.env.CODE_SERVER_TOKEN || 'password'
 
+// CORS allowed origins (debug stream diagnostic only)
+const ALLOW_ORIGINS = (process.env.ALLOW_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+// Simple in-memory chat backlog for demo endpoints
+const chats: { global: Array<{ role: string; text: string }> } = { global: [] }
+
+// State base directory under HOME (dev vs prod)
+function stateBaseDir(): string {
+  const home = process.env.HOME || '/root'
+  const env = process.env.GUILDNET_ENV === 'dev' ? '.guildnetdev' : '.guildnet'
+  const dir = path.join(home, env, 'state')
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch {}
+  return dir
+}
+
+// SQLite DB helper with minimal schema
+let __dbPromise: Promise<Database<sqlite3.Database, sqlite3.Statement>> | null = null
+async function getDB(): Promise<Database<sqlite3.Database, sqlite3.Statement>> {
+  if (!__dbPromise) {
+    const dbPath = path.join(stateBaseDir(), 'dashboard.db')
+    __dbPromise = open({ filename: dbPath, driver: sqlite3.Database }).then(async (db) => {
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS orgs (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           name TEXT UNIQUE NOT NULL,
+           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+         );`
+      )
+      await db.exec(
+        `CREATE TABLE IF NOT EXISTS kv (
+           key TEXT PRIMARY KEY,
+           value TEXT,
+           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+         );`
+      )
+      return db
+    })
+  }
+  return __dbPromise
+}
+
+// Small fetch helper
+async function fetchJSON(
+  url: string,
+  opts?: { method?: string; headers?: Record<string, string>; body?: any }
+): Promise<any> {
+  const init: any = { method: opts?.method || 'GET', headers: opts?.headers || {} }
+  if (opts && 'body' in opts) {
+    init.method = init.method || 'POST'
+    init.headers = Object.assign({ 'Content-Type': 'application/json' }, init.headers)
+    init.body = JSON.stringify(opts.body)
+  }
+  const res = await fetch(url, init as any)
+  const text = await res.text()
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`)
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+// Run a quick child process and capture combined output
+async function runQuick(
+  cmd: string,
+  args: string[] = [],
+  opts?: { timeoutMs?: number; cwd?: string; env?: NodeJS.ProcessEnv }
+): Promise<{ code: number; out: string }> {
+  return new Promise((resolve) => {
+    const p = spawn(cmd, args, { cwd: opts?.cwd, env: opts?.env })
+    let buf = ''
+    let done = false
+    const finish = (code: number) => {
+      if (done) return
+      done = true
+      resolve({ code: code ?? 0, out: buf })
+    }
+    let to: any = null
+    if (opts?.timeoutMs && opts.timeoutMs > 0) {
+      to = setTimeout(() => {
+        try {
+          p.kill('SIGKILL')
+        } catch {}
+        finish(124)
+      }, opts.timeoutMs)
+    }
+    p.stdout.on('data', (d) => (buf += String(d)))
+    p.stderr.on('data', (d) => (buf += String(d)))
+    p.on('close', (code) => {
+      if (to) clearTimeout(to)
+      finish(code ?? 0)
+    })
+    p.on('error', () => {
+      if (to) clearTimeout(to)
+      finish(127)
+    })
+  })
+}
+
+async function isPasswordlessSudo(): Promise<boolean> {
+  const r = await runQuick('sudo', ['-n', 'true'], { timeoutMs: 2000 })
+  return r.code === 0
+}
+
+async function ensureTailscaleService(
+  linuxWithSudo: boolean,
+  log?: (s: string) => void
+): Promise<boolean> {
+  // Best-effort: ensure tailscale CLI responds; on Linux try starting tailscaled
+  const ver = await runQuick('tailscale', ['version'], { timeoutMs: 3000 })
+  if (ver.code === 0) return true
+  if (process.platform !== 'darwin' && linuxWithSudo) {
+    if (log) log('Attempting to start tailscaled via systemctl…')
+    await runQuick('sudo', ['-n', 'systemctl', 'enable', '--now', 'tailscaled'], { timeoutMs: 8000 })
+    const v2 = await runQuick('tailscale', ['version'], { timeoutMs: 3000 })
+    return v2.code === 0
+  }
+  return false
+}
+
+async function pollTailscaleConnected(timeoutMs = 60000): Promise<boolean> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 3000 })
+    if (r.code === 0) {
+      try {
+        const j = JSON.parse(r.out || '{}')
+        const ok = Boolean(j && j.Self && (j.Self.TailAddr || j.Self.HostName))
+        if (ok) return true
+      } catch {
+        if (/BackendState|wgpeer|relay/i.test(r.out)) return true
+      }
+    }
+    await new Promise((r0) => setTimeout(r0, 1000))
+  }
+  return false
+}
+
+async function spawnInteractiveJoin(
+  hsUrl: string,
+  key: string,
+  hostname: string,
+  onLog?: (line: string) => void
+): Promise<void> {
+  // Minimal fallback: try non-interactive again but report as interactive
+  if (onLog) onLog('Opening interactive join is not supported in this environment; retrying up…')
+  const args = [
+    'up',
+    `--login-server=${hsUrl}`,
+    `--authkey=${key}`,
+    `--hostname=${hostname}`,
+    '--accept-dns=false',
+    '--ssh=false',
+    '--reset',
+    '--force-reauth',
+  ]
+  await runQuick('tailscale', args, { timeoutMs: 20000 })
+}
+
+function getOrchBase(): string {
+  const override = (global as any).__ORCH_OVERRIDE__
+  const envUrl = process.env.ORCHESTRATOR_URL
+  const base =
+    (typeof override === 'string' && override) ||
+    (envUrl && envUrl.length ? envUrl : ORCH_URL)
+  return normalizeOrchUrl(base)
+}
+
+function getOrchAuthHeader(): Record<string, string> {
+  const token =
+    process.env.ORCHESTRATOR_TOKEN || process.env.ORCH_TOKEN || process.env.ORCHESTRATOR_API_TOKEN || ORCH_TOKEN
+  return token ? { 'X-Auth-Token': token } : {}
+}
+
 // Relax frame embedding for proxied responses
 proxy.on('proxyRes', (proxyRes, req: any, res) => {
   try {
@@ -91,7 +270,7 @@ proxy.on('proxyRes', (proxyRes, req: any, res) => {
     delete (proxyRes as any).headers['content-security-policy']
     res.setHeader('X-Frame-Options', 'ALLOWALL')
     // If this is an embed request, rewrite redirects and cookie paths to stay under the embed base
-    const base: string | undefined = req && req._embedBase
+    const base: string | undefined = req && (req as any)._embedBase
     if (base) {
       const headers: any = (proxyRes as any).headers || {}
       const loc = headers['location'] || headers['Location']
@@ -113,353 +292,245 @@ proxy.on('proxyRes', (proxyRes, req: any, res) => {
         const arr = Array.isArray(setCookie) ? setCookie : [String(setCookie)]
         const rewritten = arr.map((c: string) => {
           let cc = c
-          // Ensure cookie path stays under embed base
-          cc = cc.replace(/Path=\/?(;|$)/i, `Path=${base}/$1`)
-          // Drop Secure for local http; optional: force SameSite=Lax to avoid None;Secure requirement
-          cc = cc.replace(/;\s*Secure/gi, '')
-          cc = cc.replace(/;\s*SameSite=None/gi, '; SameSite=Lax')
-          // Drop Domain attribute so cookie is set for current host only
-          cc = cc.replace(/;\s*Domain=[^;]*/gi, '')
+          try {
+            // Rewrite Path attribute to stay under the embed base
+            if (/;\s*Path=([^;]+)/i.test(cc)) {
+              cc = cc.replace(/;\s*Path=([^;]+)/i, (_m: string, p1: string) => {
+                const orig = String(p1 || '').trim()
+                const newPath = base + (orig.startsWith('/') ? orig : `/${orig}`)
+                return `; Path=${newPath}`
+              })
+            } else {
+              const newPath = base.endsWith('/') ? base : `${base}/`
+              cc = `${cc}; Path=${newPath}`
+            }
+          } catch {}
           return cc
         })
-        headers['set-cookie'] = rewritten
+        ;(proxyRes as any).headers['set-cookie'] = rewritten
       }
     }
   } catch {}
 })
-proxy.on('error', (err, req, res: any) => {
-  try {
-    if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain' })
-    res.end('proxy error: ' + String(err))
-  } catch {}
-})
-
-// CORS: allow configured frontend origins (comma-separated via CORS_ORIGINS or FRONTEND_ORIGIN)
-const ALLOW_ORIGINS = (process.env.CORS_ORIGINS || process.env.FRONTEND_ORIGIN || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
-app.use((req, res, next) => {
-  const origin = (req.headers.origin as string) || ''
-  const configured = ALLOW_ORIGINS.length > 0
-  const allowStar = configured && ALLOW_ORIGINS.includes('*')
-  const allowed = allowStar || (configured && origin && ALLOW_ORIGINS.includes(origin))
-  if (configured && allowed) {
-    res.setHeader('Vary', 'Origin')
-    res.setHeader('Access-Control-Allow-Origin', allowStar ? '*' : origin)
-    if (!allowStar) res.setHeader('Access-Control-Allow-Credentials', 'true')
-  } else if (!configured) {
-    // Permissive default for dev: allow all origins
-    res.setHeader('Access-Control-Allow-Origin', '*')
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token')
-  if (req.method === 'OPTIONS') {
-    res.status(204).end()
+app.post('/api/setup/stream', async (req, res) => {
+  // Require dashboard token; allow via header or query param (EventSource can't set headers)
+  const qtok = (req.query && (req.query as any).token) || ''
+  const presented = (req.headers['x-auth-token'] as string) || String(qtok || '')
+  if (presented !== TOKEN) {
+    res.status(401).end('unauthorized')
     return
   }
-  next()
-})
 
-// Resolve orchestrator base URL at request time, honoring a dev-only override
-function getOrchBase(): string {
-  const ovr = (global as any).__ORCH_OVERRIDE__
-  const base = ovr && typeof ovr === 'string' && ovr.trim() ? String(ovr).trim() : ORCH_URL
-  return base.replace(/\/$/, '')
-}
+  const flow = String(req.query.flow || 'connect') // 'create' | 'connect'
+  const orgParam = String(req.query.org || '') // optional single org name
+  // Distributed-only: require external Headscale and TS key/hostname
+  const HS_URL = String((req.query as any).HEADSCALE_URL || '')
+  const TS_KEY = String((req.query as any).TS_AUTHKEY || '')
+  const TS_HOST = String((req.query as any).TS_HOSTNAME || '')
 
-function fetchJSON(
-  urlStr: string,
-  opts: { method?: string; headers?: Record<string, string>; body?: any; timeoutMs?: number } = {}
-): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const attempt = (raw: string, triedFallback = false) => {
-      const u = new URL(raw)
-      const isHttps = u.protocol === 'https:'
-      const lib = isHttps ? https : http
-      const timeoutMs = Math.max(300, Number(opts.timeoutMs || 8000))
-      const req = lib.request(
-        {
-          hostname: u.hostname,
-          port: Number(u.port || (isHttps ? 443 : 80)),
-          path: u.pathname + (u.search || ''),
-          method: opts.method || 'GET',
-          headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {}),
-          // Accept self-signed when talking to local dev https targets
-          ...(isHttps ? ({ rejectUnauthorized: false } as any) : {}),
-        },
-        (res) => {
-          let data = ''
-          res.on('data', (d: any) => (data += d))
-          res.on('end', () => {
-            const status = res.statusCode || 0
-            const ct = String((res.headers as any)['content-type'] || '')
-            const isJSON = ct.includes('application/json')
-            if (status >= 400) {
-              const snippet = (data || '').slice(0, 200)
-              return reject(new Error(`${status} ${snippet}`))
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const send = (event: string, data: any) => {
+    res.write(`event: ${event}\n`)
+    res.write(`data: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`)
+  }
+
+  const here = path.dirname(new URL(import.meta.url).pathname)
+  const srcDir = path.resolve(here, '..', '..')
+  const resolveScript = (name: string) => path.resolve(srcDir, 'scripts', name)
+  const runStep = (
+    title: string,
+    file: string,
+    args: string[] = [],
+    envOverride: Record<string, string> = {}
+  ) =>
+    new Promise<void>((resolve, reject) => {
+      send('step', { title, file, args })
+      const childEnv: NodeJS.ProcessEnv = { ...process.env, ...envOverride }
+      const proc = spawn('bash', [file, ...args], { cwd: srcDir, env: childEnv })
+      proc.stdout.on('data', (d) => send('log', String(d)))
+      proc.stderr.on('data', (d) => send('log', String(d)))
+      proc.on('close', (code) => {
+        if (code === 0) {
+          send('stepDone', { title, code })
+          resolve()
+        } else {
+          send('stepError', { title, code })
+          reject(new Error(`${title} failed: ${code}`))
+        }
+      })
+    })
+
+  try {
+    send('begin', { flow, mode: 'external', org: orgParam || undefined })
+
+    // Inputs are mandatory for both flows in distributed mode
+    const missing: string[] = []
+    if (!HS_URL) missing.push('HEADSCALE_URL')
+    if (!TS_KEY) missing.push('TS_AUTHKEY')
+    if (!TS_HOST) missing.push('TS_HOSTNAME')
+    if (missing.length) {
+      send('error', `Missing required inputs: ${missing.join(', ')}`)
+      send('done', { ok: false })
+      return res.end()
+    }
+
+    // 1) Join this host to tailnet
+    const hostForJoin = TS_HOST || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
+    const ALLOW_INTERACTIVE =
+      process.env.SETUP_ALLOW_INTERACTIVE !== '0' && process.env.RUN_TAILSCALE_E2E !== '1'
+    let joined = false
+    const hasPwless = await isPasswordlessSudo()
+    if (process.platform === 'darwin') {
+      try {
+        send('step', { title: 'Join tailnet (non-interactive)' })
+        const svcOk = await ensureTailscaleService(false, (s) => send('log', s))
+        if (!svcOk) throw new Error('Tailscale service not reachable')
+        const args = [
+          'up',
+          `--login-server=${HS_URL}`,
+          `--authkey=${TS_KEY}`,
+          `--hostname=${hostForJoin}`,
+          '--accept-dns=false',
+          '--ssh=false',
+          '--reset',
+          '--force-reauth',
+        ]
+        const r = await runQuick('tailscale', args, { timeoutMs: 30000 })
+        if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+        const ok = await pollTailscaleConnected(60000)
+        if (!ok) throw new Error('tailscale did not connect within timeout')
+        send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+        joined = true
+      } catch (e: any) {
+        send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+        send('log', String(e && e.message ? e.message : e))
+      }
+    } else if (hasPwless) {
+      try {
+        send('step', { title: 'Join tailnet (non-interactive)' })
+        const svcOk = await ensureTailscaleService(true, (s) => send('log', s))
+        if (!svcOk) throw new Error('Tailscale service not reachable')
+        const args = [
+          'tailscale',
+          'up',
+          `--login-server=${HS_URL}`,
+          `--authkey=${TS_KEY}`,
+          `--hostname=${hostForJoin}`,
+          '--accept-dns=false',
+          '--ssh',
+          '--reset',
+          '--force-reauth',
+        ]
+        const r = await runQuick('sudo', ['-n', ...args], { timeoutMs: 20000 })
+        if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+        const ok = await pollTailscaleConnected(60000)
+        if (!ok) throw new Error('tailscale did not connect within timeout')
+        send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+        joined = true
+      } catch (e: any) {
+        send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+        send('log', String(e && e.message ? e.message : e))
+      }
+    }
+    if (!joined && ALLOW_INTERACTIVE) {
+      send('step', { title: 'Join tailnet (interactive)' })
+      await spawnInteractiveJoin(HS_URL, TS_KEY, hostForJoin, (line) => send('log', line))
+      const ok = await pollTailscaleConnected(180000)
+      if (!ok) {
+        send('stepError', { title: 'Join tailnet (interactive)', code: 1 })
+        throw new Error('tailscale did not connect; please check the Terminal window or retry')
+      }
+      send('stepDone', { title: 'Join tailnet (interactive)', code: 0 })
+    }
+    if (!joined && !ALLOW_INTERACTIVE) {
+      throw new Error('Interactive join disabled and non-interactive join failed')
+    }
+
+    try {
+      const db = await getDB()
+      await db.run(
+        'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+        'tailscale_connected',
+        '1'
+      )
+    } catch {}
+
+    if (flow === 'create' && process.env.TEST_FAST_SETUP !== '1') {
+      // 2) Per-org steps: discover nodes via Tailscale and bootstrap with Talos
+      const orgs: string[] = []
+      if (orgParam) orgs.push(orgParam)
+      else {
+        try {
+          const db = await getDB()
+          const rows: Array<{ name: string }> = await db.all('SELECT name FROM orgs ORDER BY id ASC')
+          rows.forEach((r) => orgs.push(r.name))
+        } catch {}
+      }
+      for (const o of orgs) {
+        const env: Record<string, string> = {}
+        // Discover nodes via tailscale status
+        try {
+          const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 5000 })
+          if (r.code === 0 && r.out) {
+            const j = JSON.parse(r.out)
+            const peers = (j && (j.Peers || j.Peer || [])) || []
+            const self = j && j.Self ? [j.Self] : []
+            const all = Array.isArray(peers) ? peers.concat(self) : self
+            const up = o.toUpperCase()
+            const nameMatches = (hn: string, pref: string) => hn.toLowerCase().startsWith(pref)
+            const tagsOf = (p: any) => (p && (p.Tags || p.Tag || p.forcedTags || [])) || []
+            const ipv4 = (p: any): string =>
+              p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
+                ? Array.isArray(p.TailscaleIPs)
+                  ? p.TailscaleIPs.find((x: string) => x.includes('.')) || ''
+                  : String(p.TailAddr || '').includes('.')
+                    ? String(p.TailAddr)
+                    : ''
+                : ''
+            const cp: string[] = []
+            const wk: string[] = []
+            for (const p of all) {
+              const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '')
+              const ip = ipv4(p)
+              if (!ip) continue
+              if (nameMatches(hn, `${o}-cp-`)) cp.push(ip)
+              else if (nameMatches(hn, `${o}-worker-`)) wk.push(ip)
             }
-            if (!data) return resolve({})
-            if (isJSON) {
-              try {
-                return resolve(JSON.parse(data))
-              } catch (e) {
-                return reject(e)
+            if (!cp.length || !wk.length) {
+              for (const p of all) {
+                const ip = ipv4(p)
+                if (!ip) continue
+                const tags = tagsOf(p).map((t: any) => String(t))
+                if (!cp.length && tags.some((t: any) => /(^|:)cp($|:)/i.test(t))) cp.push(ip)
+                if (!wk.length && tags.some((t: any) => /(^|:)worker($|:)/i.test(t))) wk.push(ip)
               }
             }
-            return resolve({ text: data })
-          })
-        }
-      )
-      // Fail the request if it takes too long
-      req.setTimeout(timeoutMs, () => {
-        try {
-          req.destroy(new Error(`timeout after ${timeoutMs}ms`))
-        } catch {}
-      })
-      req.on('error', (err: any) => {
-        const msg = String((err && (err.code || err.message)) || '')
-        if (
-          !triedFallback &&
-          u.protocol === 'https:' &&
-          /EPROTO|WRONG_VERSION_NUMBER|wrong version number/i.test(msg)
-        ) {
-          // Retry once with http scheme if https failed with TLS version issues
-          const fallback = 'http://' + u.host + u.pathname + (u.search || '')
-          return attempt(fallback, true)
-        }
-        reject(err)
-      })
-      if (opts.body)
-        req.write(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body))
-      req.end()
-    }
-    attempt(urlStr)
-  })
-}
-
-// In-memory chats
-const chats: { global: Array<{ role: 'user' | 'assistant' | 'system'; text: string }> } = {
-  global: [],
-}
-// SQLite orgs persistence
-let dbPromise: Promise<Database<sqlite3.Database, sqlite3.Statement>> | null = null
-function getDB() {
-  if (!dbPromise) {
-    const dataDir = process.env.DASHBOARD_DATA_DIR || stateBaseDir()
-    const dbPath = path.join(dataDir, 'dashboard.db')
-    fs.mkdirSync(dataDir, { recursive: true })
-    dbPromise = open({ filename: dbPath, driver: sqlite3.Database }).then(async (db) => {
-      await db.exec(
-        'CREATE TABLE IF NOT EXISTS orgs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
-      )
-      await db.exec(
-        'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
-      )
-      return db
-    })
-  }
-  return dbPromise
-}
-
-// Helpers: small process runners and platform actions
-// Resolve a writable base directory for persistent state.
-// State lives under dev or prod base depending on env:
-// - If DASHBOARD_STATE_DIR is set, use it
-// - Else if GUILDNET_STATE_DIR is set, use it
-// - Else if GUILDNET_HOME is set, use `${GUILDNET_HOME}/state`
-// - Else default: ~/.guildnetdev/state when GUILDNET_ENV=dev, otherwise ~/.guildnet/state
-function stateBaseDir(): string {
-  const override = process.env.DASHBOARD_STATE_DIR || process.env.GUILDNET_STATE_DIR
-  if (override) {
-    try {
-      fs.mkdirSync(override, { recursive: true })
-    } catch {}
-    return override
-  }
-  const baseHome = process.env.GUILDNET_HOME
-  if (baseHome) {
-    const dir = path.join(baseHome, 'state')
-    try {
-      fs.mkdirSync(dir, { recursive: true })
-    } catch {}
-    return dir
-  }
-  const home = process.env.HOME || process.env.USERPROFILE || '.'
-  const isDev =
-    process.env.GUILDNET_ENV === 'dev' ||
-    process.env.NODE_ENV === 'development' ||
-    process.env.UI_DEV === '1'
-  const dir = path.join(home, isDev ? '.guildnetdev' : '.guildnet', 'state')
-  try {
-    fs.mkdirSync(dir, { recursive: true })
-  } catch {}
-  return dir
-}
-async function runQuick(cmd: string, args: string[], opts: { timeoutMs?: number } = {}) {
-  return await new Promise<{ code: number; out: string }>((resolve) => {
-    const p = spawn(cmd, args)
-    let out = ''
-    const t = opts.timeoutMs
-      ? setTimeout(() => {
-          try {
-            p.kill('SIGKILL')
-          } catch {}
-          resolve({ code: 124, out })
-        }, opts.timeoutMs)
-      : null
-    p.stdout.on('data', (d) => (out += String(d)))
-    p.stderr.on('data', (d) => (out += String(d)))
-    p.on('close', (code) => {
-      if (t) clearTimeout(t)
-      resolve({ code: code ?? 0, out })
-    })
-  })
-}
-
-async function isPasswordlessSudo(): Promise<boolean> {
-  const r = await runQuick('sudo', ['-n', 'true'], { timeoutMs: 3000 }).catch(() => ({ code: 1 }))
-  return (r && r.code === 0) || false
-}
-
-async function ensureTailscaleService(hasPwless: boolean, onLog?: (s: string) => void) {
-  const log = (s: string) => {
-    try {
-      onLog && onLog(s)
-    } catch {}
-  }
-  // quick probe
-  let probe = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 3000 }).catch(() => ({
-    code: 1,
-    out: '',
-  }))
-  if (probe.code === 0) return true
-  if (process.platform === 'darwin') {
-    // Start the app which hosts the service
-    await runQuick('open', ['-a', 'Tailscale']).catch(() => ({ code: 1 }) as any)
-    // Poll up to 30s for service to become reachable
-    const end = Date.now() + 30000
-    while (Date.now() < end) {
-      probe = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 2000 }).catch(() => ({
-        code: 1,
-        out: '',
-      }))
-      if (probe.code === 0) return true
-      await new Promise((r) => setTimeout(r, 500))
-    }
-    log('Tailscale service not reachable after starting app')
-    return false
-  }
-  // Linux best-effort
-  if (hasPwless) {
-    // Try systemd first
-    await runQuick('sudo', ['-n', 'systemctl', 'start', 'tailscaled'], { timeoutMs: 5000 }).catch(
-      () => ({ code: 1 }) as any
-    )
-    // Poll up to 30s
-    const end = Date.now() + 30000
-    while (Date.now() < end) {
-      probe = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 2000 }).catch(() => ({
-        code: 1,
-        out: '',
-      }))
-      if (probe.code === 0) return true
-      await new Promise((r) => setTimeout(r, 500))
-    }
-    log('tailscaled not reachable; ensure it is installed and running')
-  } else {
-    log('No passwordless sudo; cannot start tailscaled automatically')
-  }
-  return false
-}
-
-async function pollTailscaleConnected(maxMs = 120000): Promise<boolean> {
-  const end = Date.now() + maxMs
-  while (Date.now() < end) {
-    const r = await new Promise<{ ok: boolean }>((resolve) => {
-      const p = spawn('tailscale', ['status', '--json'])
-      let buf = ''
-      p.stdout.on('data', (d) => (buf += String(d)))
-      p.stderr.on('data', (d) => (buf += String(d)))
-      p.on('close', (code) => {
-        if (code === 0) {
-          try {
-            const j = JSON.parse(buf)
-            const selfOk = Boolean(j && j.Self && (j.Self.TailAddr || j.Self.HostName))
-            const backendOk = String(j && j.BackendState) === 'Running'
-            const tailnetOk = Boolean((j && (j.Tailnet || j.CurrentTailnet)) || false)
-            resolve({ ok: selfOk || backendOk || tailnetOk })
-          } catch {
-            resolve({ ok: /relay|wgpeer|hostinfo/i.test(buf) })
+            if (cp.length) env[`${up}_CP_NODES`] = cp.join(' ')
+            if (wk.length) env[`${up}_WORKER_NODES`] = wk.join(' ')
           }
-        } else resolve({ ok: false })
-      })
-    })
-    if (r.ok) return true
-    await new Promise((r) => setTimeout(r, 1000))
-  }
-  return false
-}
-
-function escapeAppleScriptString(s: string) {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-}
-
-async function spawnInteractiveJoin(
-  loginServer: string,
-  authKey: string,
-  hostname: string,
-  onLog: (line: string) => void
-): Promise<void> {
-  const upCmd = `sudo tailscale up --login-server=\"${loginServer}\" --authkey=\"${authKey}\" --hostname=\"${hostname}\" --accept-dns=false --ssh=false --reset --force-reauth`
-  const plat = process.platform
-  if (plat === 'darwin') {
-    // Open Terminal and run, then exit. Terminal may close if user prefers close-on-exit.
-    // Proactively open Tailscale.app to surface any system permission prompts early.
-    await runQuick('open', ['-a', 'Tailscale']).catch(() => ({ code: 1 }) as any)
-    // Give the helper a moment to start
-    await new Promise((r) => setTimeout(r, 1000))
-    // Shell sequence: ensure service, then up
-    const macShell = `bash -lc 'if ! tailscale status --json >/dev/null 2>&1; then open -a Tailscale || true; for i in {1..30}; do tailscale status --json >/dev/null 2>&1 && break; sleep 1; done; fi; ${upCmd}; echo "Done. You can close this window."; exit'`
-    const scriptLines = [
-      'tell application "Terminal"',
-      'activate',
-      `do script "${escapeAppleScriptString(macShell)}"`,
-      'end tell',
-    ]
-    await runQuick(
-      'osascript',
-      scriptLines.flatMap((l) => ['-e', l])
-    )
-    onLog(
-      'Opened Terminal for interactive tailscale up. Enter your password when prompted. If macOS shows Network Extension permission prompts, approve them.'
-    )
-  } else if (plat === 'linux') {
-    // Best-effort: try gnome-terminal, then xterm
-    const shellCmd = `bash -lc 'if ! tailscale status --json >/dev/null 2>&1; then sudo systemctl start tailscaled || sudo service tailscaled start || true; for i in {1..30}; do tailscale status --json >/dev/null 2>&1 && break; sleep 1; done; fi; ${upCmd}; echo "Done. You can close this window."; read -n 1 -s -r -p "Press any key to close"'`
-    const try1 = await runQuick('gnome-terminal', ['--', 'bash', '-lc', shellCmd], {
-      timeoutMs: 3000,
-    })
-    if (try1.code !== 0) {
-      await runQuick('xterm', ['-e', shellCmd]).catch(() => ({}) as any)
+        } catch {}
+        if (!env[`${o.toUpperCase()}_CP_NODES`]) {
+          send('hint', `No control-plane nodes for '${o}'. Name nodes '${o}-cp-*' or tag with 'cp'.`)
+        }
+        await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o], env)
+        await runStep(`Install Tailscale Operator (${o})`, resolveScript('install_tailscale_operator.sh'), [o])
+        await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
+      }
+      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
+    } else if (flow === 'connect') {
+      if (process.env.TEST_FAST_SETUP !== '1') {
+        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
+      }
     }
-    onLog('Opened terminal for interactive tailscale up. Complete prompts to continue.')
-  } else {
-    const plainCmd = `sudo tailscale up --login-server="${loginServer}" --authkey="${authKey}" --hostname="${hostname}" --accept-dns=false --ssh=false --reset --force-reauth`
-    onLog(
-      'Unsupported platform for interactive sudo. Please run this command manually: ' + plainCmd
-    )
-  }
-}
 
-// Orgs API
-app.get('/api/orgs', async (req, res) => {
-  try {
-    const db = await getDB()
-    const rows = await db.all('SELECT id, name, created_at FROM orgs ORDER BY id ASC')
-    res.json({ ok: true, orgs: rows })
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) })
+    send('done', { ok: true })
+  } catch (e: any) {
+    send('error', String(e && e.message ? e.message : e))
+    send('done', { ok: false })
+  } finally {
+    res.end()
   }
 })
 app.post('/api/orgs', async (req, res) => {
@@ -471,202 +542,7 @@ app.post('/api/orgs', async (req, res) => {
     const db = await getDB()
     await db.run('INSERT INTO orgs(name) VALUES (?)', name)
     const row = await db.get('SELECT id, name, created_at FROM orgs WHERE name=?', name)
-    // Create default placeholder configs for this org (kubeconfig and talosconfig)
-    try {
-      const base = stateBaseDir()
-      const talosDir = path.join(base, 'talos')
-      const kubeDir = path.join(base, 'kube')
-      fs.mkdirSync(talosDir, { recursive: true })
-      fs.mkdirSync(kubeDir, { recursive: true })
-      const talosPath = path.join(talosDir, `${name}.talosconfig`)
-      const kubePath = path.join(kubeDir, `${name}.config`)
-      // Always ensure a minimal talosconfig exists for this org. If missing or invalid, (re)generate.
-      const looksValidTalos = (txt: string) => {
-        if (!txt) return false
-        const t = txt.trim()
-        if (!t || t.startsWith('# TEMPLATE:')) return false
-        const hasCtx = /\bcontexts?:/i.test(txt)
-        const hasCred = /\b(ca:|crt:|key:)/i.test(txt)
-        const hasEnds = /\b(endpoints|nodes):/i.test(txt)
-        return hasCtx && hasCred && hasEnds
-      }
-      let needWrite = true
-      if (fs.existsSync(talosPath)) {
-        try {
-          const existing = fs.readFileSync(talosPath, 'utf8')
-          needWrite = !looksValidTalos(existing)
-        } catch {
-          needWrite = true
-        }
-      }
-      if (needWrite) {
-        const orgCtx = name
-        const endpoints = [process.env.DEFAULT_TALOS_ENDPOINT || '127.0.0.1']
-        const nodes = [process.env.DEFAULT_TALOS_NODE || endpoints[0]]
-        const caPem = (
-          process.env.DEFAULT_TALOS_CA_PEM ||
-          '-----BEGIN CERTIFICATE-----\nPLACEHOLDER-CA\n-----END CERTIFICATE-----'
-        ).trim()
-        const crtPem = (
-          process.env.DEFAULT_TALOS_CRT_PEM ||
-          '-----BEGIN CERTIFICATE-----\nPLACEHOLDER-CRT\n-----END CERTIFICATE-----'
-        ).trim()
-        const keyPem = (
-          process.env.DEFAULT_TALOS_KEY_PEM ||
-          '-----BEGIN PRIVATE KEY-----\nPLACEHOLDER-KEY\n-----END PRIVATE KEY-----'
-        ).trim()
-        const indent = (s: string, n = 6) =>
-          s
-            .split(/\r?\n/)
-            .map((l) => ' '.repeat(n) + l)
-            .join('\n')
-        const yaml = [
-          `context: ${orgCtx}`,
-          'contexts:',
-          `  - name: ${orgCtx}`,
-          '    endpoints:',
-          ...endpoints.map((e) => `      - ${e}`),
-          '    nodes:',
-          ...nodes.map((e) => `      - ${e}`),
-          '    ca: |',
-          indent(caPem, 6),
-          '    crt: |',
-          indent(crtPem, 6),
-          '    key: |',
-          indent(keyPem, 6),
-          '',
-        ].join('\n')
-        try {
-          fs.writeFileSync(talosPath, yaml)
-        } catch (e) {
-          console.warn('failed writing generated talosconfig for org', name, e)
-        }
-      }
-      // Always ensure a minimal kubeconfig exists for this org. If missing or invalid, (re)generate.
-      const looksValidKube = (txt: string) => {
-        if (!txt) return false
-        const t = txt.trim()
-        if (!t || t.startsWith('# TEMPLATE:')) return false
-        const hasApi = /\bapiVersion:\s*v1\b/i.test(txt)
-        const hasKind = /\bkind:\s*Config\b/i.test(txt)
-        return hasApi && hasKind
-      }
-      let needWriteKC = true
-      if (fs.existsSync(kubePath)) {
-        try {
-          const existing = fs.readFileSync(kubePath, 'utf8')
-          needWriteKC = !looksValidKube(existing)
-        } catch {
-          needWriteKC = true
-        }
-      }
-      if (needWriteKC) {
-        const org = name
-        const server = (process.env.DEFAULT_KUBE_SERVER || 'https://127.0.0.1:6443').trim()
-        const token = (process.env.DEFAULT_KUBE_TOKEN || 'PLACEHOLDER-TOKEN').trim()
-        const y = [
-          'apiVersion: v1',
-          'kind: Config',
-          'clusters:',
-          `- name: ${org}`,
-          '  cluster:',
-          `    server: ${server}`,
-          '    insecure-skip-tls-verify: true',
-          'contexts:',
-          `- name: ${org}`,
-          '  context:',
-          `    cluster: ${org}`,
-          `    user: ${org}-user`,
-          `current-context: ${org}`,
-          'users:',
-          `- name: ${org}-user`,
-          '  user:',
-          `    token: ${token}`,
-          '',
-        ].join('\n')
-        try {
-          fs.writeFileSync(kubePath, y)
-        } catch (e) {
-          console.warn('failed writing generated kubeconfig for org', name, e)
-        }
-      }
-    } catch (e) {
-      console.warn('placeholder config creation failed:', e)
-    }
-    // Auto-generate kubeconfig for this org if possible. We need an endpoint (control-plane IP).
-    // Try heuristics via tailscale status like in setup flow; otherwise, skip silently.
-    try {
-      const upper = name.toUpperCase()
-      const cpEnv = process.env[`${upper}_CP_NODES`] || ''
-      let endpoint = ''
-      if (cpEnv.trim()) endpoint = cpEnv.trim().split(/\s+/)[0]
-      else {
-        try {
-          const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 3000 })
-          if (r.code === 0 && r.out) {
-            const j = JSON.parse(r.out)
-            const peers = (j && (j.Peers || j.Peer || [])) || []
-            const self = j && j.Self ? [j.Self] : []
-            const all = Array.isArray(peers) ? peers.concat(self) : self
-            const nameMatches = (hn: string, pref: string) => hn.toLowerCase().startsWith(pref)
-            const ipv4 = (p: any): string =>
-              p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
-                ? Array.isArray(p.TailscaleIPs)
-                  ? p.TailscaleIPs.find((x: string) => x.includes('.')) || ''
-                  : String(p.TailAddr || '').includes('.')
-                    ? String(p.TailAddr)
-                    : ''
-                : ''
-            for (const p of all) {
-              const hn = String(
-                (p && (p.HostName || p.Hostname || p.DNSName || '')) || ''
-              ).toLowerCase()
-              const ip = ipv4(p)
-              if (!ip) continue
-              if (nameMatches(hn, `${name.toLowerCase()}-cp-`)) {
-                endpoint = ip
-                break
-              }
-            }
-          }
-        } catch {}
-      }
-      // Only attempt auto kubeconfig generation if a valid talosconfig is present
-      const talosDir2 = path.join(stateBaseDir(), 'talos')
-      const talosPath2 = path.join(talosDir2, `${name}.talosconfig`)
-      const validateTalosLocal = (txt: string) => {
-        if (!txt) return false
-        const trimmed = txt.trim()
-        if (!trimmed || trimmed.startsWith('# TEMPLATE:')) return false
-        const hasContexts = /\bcontexts?:/i.test(txt)
-        const hasAnyCred = /\b(crt|key|ca):/i.test(txt)
-        const hasEndpointOrNodes = /\b(endpoints|nodes):/i.test(txt)
-        return hasContexts && hasAnyCred && hasEndpointOrNodes
-      }
-      const talosExists = fs.existsSync(talosPath2)
-      let talosValid = false
-      try {
-        if (talosExists) {
-          const txt = fs.readFileSync(talosPath2, 'utf8')
-          talosValid = validateTalosLocal(txt)
-        }
-      } catch {}
-      if (endpoint && talosValid) {
-        // Ask orchestrator to generate kubeconfig; it writes to ~/.guildnet/state/kube
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-        if (ORCH_TOKEN) headers['X-Auth-Token'] = ORCH_TOKEN
-        try {
-          await fetchJSON(`${getOrchBase()}/kubeconfig/generate`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ org: name, endpoint }),
-          })
-        } catch (e) {
-          // Non-fatal; user can still upload kubeconfig manually via UI.
-          console.warn('kubeconfig generate failed', e)
-        }
-      }
-    } catch {}
+    // No placeholder files are created; cluster provisioning is a separate step.
     res.json({ ok: true, org: row })
   } catch (e: any) {
     if (String(e && e.message).includes('UNIQUE'))
@@ -700,7 +576,14 @@ app.get('/api/orgs/:name/kubeconfig/status', async (req, res) => {
       try {
         const text = fs.readFileSync(p, 'utf8')
         const meaningful = text.split(/\r?\n/).some((ln) => ln.trim() && !ln.trim().startsWith('#'))
-        real = meaningful && /apiVersion:\s*v1/i.test(text) && /kind:\s*Config/i.test(text)
+        const placeholder = /GENERATED_PLACEHOLDER/i.test(text) || /PLACEHOLDER-TOKEN/i.test(text)
+        const badServer = /server:\s*https?:\/\/(0\.0\.0\.0|127\.0\.0\.1):/i.test(text)
+        real =
+          meaningful &&
+          /apiVersion:\s*v1/i.test(text) &&
+          /kind:\s*Config/i.test(text) &&
+          !placeholder &&
+          !badServer
       } catch {}
     }
     res.json({ ok: true, exists: real, path: real ? p : '' })
@@ -741,7 +624,9 @@ app.get('/api/orgs/:name/talosconfig/status', async (req, res) => {
       try {
         const text = fs.readFileSync(p, 'utf8')
         const meaningful = text.split(/\r?\n/).some((ln) => ln.trim() && !ln.trim().startsWith('#'))
-        real = meaningful && /contexts?:/i.test(text)
+        const placeholder =
+          /GENERATED_PLACEHOLDER/i.test(text) || /PLACEHOLDER-(CA|CRT|KEY)/i.test(text)
+        real = meaningful && /contexts?:/i.test(text) && !placeholder
       } catch {}
     }
     res.json({ ok: true, exists: real, path: real ? p : '' })
@@ -834,23 +719,31 @@ app.post('/api/orgs/:name/bootstrap', async (req, res) => {
     : []
   if (!cpNodes.length) return res.status(400).json({ ok: false, error: 'cpNodes required' })
 
-  // 1) Try orchestrator path first
+  // 1) Try orchestrator path first (forward upstream status codes verbatim)
   try {
-    const headers: Record<string, string> = ORCH_TOKEN ? { 'X-Auth-Token': ORCH_TOKEN } : {}
-    const out = await fetchJSON(`${getOrchBase()}/orgs/bootstrap`, {
+    const headers: Record<string, string> = getOrchAuthHeader()
+    const upstream = await fetch(`${getOrchBase()}/orgs/bootstrap`, {
       method: 'POST',
-      headers,
-      body: { org, cpNodes, workerNodes },
-    })
-    return res.json(out)
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ org, cpNodes, workerNodes }),
+    } as any)
+    const text = await upstream.text()
+    let payload: any
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      payload = { ok: upstream.ok, text }
+    }
+    if (upstream.ok) return res.status(200).json(payload)
+    // Propagate 4xx/5xx from orchestrator instead of masking as 502
+    const code = Math.max(400, Math.min(599, upstream.status || 502))
+    return res.status(code).json(payload && typeof payload === 'object'
+      ? payload
+      : { ok: false, error: text || 'orchestrator bootstrap failed' })
   } catch (e: any) {
+    // Network or unexpected error – keep as 502
     const msg = e?.message ? String(e.message) : String(e)
-    // Try to surface upstream status code (e.g., 401) instead of always 502
-    let code = 502
-    let m = msg && msg.match(/\b(\d{3})\b/)
-    if (!m) m = msg && msg.match(/HTTP\/?\d\.\d\s+(\d{3})/) // rare
-    if (m) code = Math.max(400, Math.min(599, Number(m[1])))
-    return res.status(code).json({ ok: false, error: msg || 'orchestrator bootstrap failed' })
+    return res.status(502).json({ ok: false, error: msg || 'orchestrator bootstrap failed' })
   }
 })
 // removed unused agentChats
@@ -1140,22 +1033,72 @@ app.post('/api/k8s/orchestrator/deploy', async (req, res) => {
       }
     }
     // Explicit API discovery check: list api-resources to ensure server is a Kubernetes API
-    const apiRes = await tryCmd(['api-resources', '-o', 'name', '--request-timeout=10s'])
+    let apiRes = await tryCmd(['api-resources', '-o', 'name', '--request-timeout=10s'])
     if (apiRes.code !== 0) {
-      let serverUrl = ''
-      try {
-        const text = fs.readFileSync(kubeCfg, 'utf8')
-        const m = text.match(/\bserver:\s*(\S+)/)
-        if (m) serverUrl = m[1]
-      } catch {}
-      return res.status(400).json({
-        ok: false,
-        error:
-          'Kubernetes API discovery failed for this kubeconfig. Verify the kubeconfig points to a running Kubernetes API server (not a Talos endpoint), and that your user has permissions to list API resources.',
-        details: (apiRes.out || '').toString().slice(0, 500),
-        kubeconfig: kubeCfg,
-        server: serverUrl || undefined,
-      })
+      // If kubeconfig appears to be a placeholder (e.g., https://127.0.0.1:6443 and refused), try importing user's current kubectl context automatically.
+      const outText = (apiRes.out || '').toString()
+      const looksRefused = /127\.0\.0\.1:6443|connection refused|dial tcp/i.test(outText)
+      let imported = false
+      if (looksRefused) {
+        const kc = await runQuick('kubectl', [
+          'config',
+          'view',
+          '--minify',
+          '--flatten',
+          '-o',
+          'yaml',
+        ])
+        if (kc.code === 0 && /apiVersion:\s*v1/i.test(kc.out) && /kind:\s*Config/i.test(kc.out)) {
+          try {
+            fs.writeFileSync(kubeCfg, kc.out)
+            imported = true
+          } catch {}
+        }
+        if (imported) {
+          // Retry discovery once with the imported kubeconfig
+          apiRes = await tryCmd(['api-resources', '-o', 'name', '--request-timeout=10s'])
+        }
+      }
+      if (apiRes.code !== 0) {
+        let serverUrl = ''
+        let text = ''
+        try {
+          text = fs.readFileSync(kubeCfg, 'utf8')
+          const m = text.match(/\bserver:\s*(\S+)/)
+          if (m) serverUrl = m[1]
+        } catch {}
+        // If kubeconfig points to 0.0.0.0:PORT, rewrite to 127.0.0.1:PORT and retry once.
+        try {
+          const m2 = serverUrl.match(/^https?:\/\/(0\.0\.0\.0):(\d+)/)
+          if (m2) {
+            const port = m2[2]
+            const patched = text.replace(
+              /(\bserver:\s*)https?:\/\/0\.0\.0\.0:(\d+)/,
+              `$1https://127.0.0.1:${port}`
+            )
+            if (patched && patched !== text) {
+              fs.writeFileSync(kubeCfg, patched)
+              apiRes = await tryCmd(['api-resources', '-o', 'name', '--request-timeout=10s'])
+              if (apiRes.code === 0) {
+                serverUrl = `https://127.0.0.1:${port}`
+              } else {
+                // restore original to avoid confusion
+                fs.writeFileSync(kubeCfg, text)
+              }
+            }
+          }
+        } catch {}
+        // If still failing, return error to caller with hints.
+        return res.status(400).json({
+          ok: false,
+          error:
+            'Kubernetes API discovery failed for this kubeconfig. Verify the kubeconfig points to a running Kubernetes API server (not a Talos endpoint), and that your user has permissions to list API resources.',
+          details: outText.slice(0, 500),
+          kubeconfig: kubeCfg,
+          server: serverUrl || undefined,
+          attemptedImport: looksRefused ? 'kubectl current-context' : undefined,
+        })
+      }
     }
     // Apply manifests using org kubeconfig
     const apply = await runQuick('kubectl', [
@@ -1410,7 +1353,7 @@ app.post('/api/debug/orchestrator-url', (req, res) => {
   }
 })
 
-// Setup automation: stream steps to create a new cluster or connect this device
+// Setup automation: stream steps (distributed-only)
 app.get('/api/setup/stream', async (req, res) => {
   // Require dashboard token; allow via header or query param (EventSource can't set headers)
   const qtok = (req.query && (req.query as any).token) || ''
@@ -1421,11 +1364,9 @@ app.get('/api/setup/stream', async (req, res) => {
   }
 
   const flow = String(req.query.flow || 'connect') // 'create' | 'connect'
-  const mode = String(req.query.mode || 'auto') // 'external' | 'local' | 'auto'
-  const orgParam = String(req.query.org || '') // optional single org; default uses helpers
-  // Optional config overrides from the UI
+  const orgParam = String(req.query.org || '') // optional single org name
+  // Distributed-only: require external Headscale and TS key/hostname
   const HS_URL = String((req.query as any).HEADSCALE_URL || '')
-  const HS_SSH = String((req.query as any).HEADSCALE_SSH || '')
   const TS_KEY = String((req.query as any).TS_AUTHKEY || '')
   const TS_HOST = String((req.query as any).TS_HOSTNAME || '')
 
@@ -1448,12 +1389,7 @@ app.get('/api/setup/stream', async (req, res) => {
   ) =>
     new Promise<void>((resolve, reject) => {
       send('step', { title, file, args })
-      const childEnv: NodeJS.ProcessEnv = { ...process.env }
-      if (HS_URL) childEnv.HEADSCALE_URL = HS_URL
-      if (HS_SSH) childEnv.HEADSCALE_SSH = HS_SSH
-      if (TS_KEY) childEnv.TS_AUTHKEY = TS_KEY
-      if (TS_HOST) childEnv.TS_HOSTNAME = TS_HOST
-      Object.assign(childEnv, envOverride)
+      const childEnv: NodeJS.ProcessEnv = { ...process.env, ...envOverride }
       const proc = spawn('bash', [file, ...args], { cwd: srcDir, env: childEnv })
       proc.stdout.on('data', (d) => send('log', String(d)))
       proc.stderr.on('data', (d) => send('log', String(d)))
@@ -1469,532 +1405,169 @@ app.get('/api/setup/stream', async (req, res) => {
     })
 
   try {
-    send('begin', { flow, mode, org: orgParam || undefined })
+    send('begin', { flow, mode: 'external', org: orgParam || undefined })
 
-    const hsExternal = Boolean(HS_SSH.length)
-    const effectiveMode = mode === 'auto' ? (hsExternal ? 'external' : 'local') : mode
-
-    // Early input validation per flow to avoid long-running failures
+    // Inputs are mandatory for both flows in distributed mode
     const missing: string[] = []
-    if (flow === 'connect') {
-      if (!HS_URL) missing.push('HEADSCALE_URL')
-      if (!TS_KEY) missing.push('TS_AUTHKEY')
-      if (!TS_HOST) missing.push('TS_HOSTNAME')
-    } else if (flow === 'create') {
-      // For local create, we'll bootstrap Headscale ourselves and can generate a preauth key
-      if (effectiveMode === 'external' && !HS_URL) missing.push('HEADSCALE_URL')
-      if (!TS_HOST) missing.push('TS_HOSTNAME')
-    }
+    if (!HS_URL) missing.push('HEADSCALE_URL')
+    if (!TS_KEY) missing.push('TS_AUTHKEY')
+    if (!TS_HOST) missing.push('TS_HOSTNAME')
     if (missing.length) {
-      send('error', `Missing required inputs for ${flow}: ${missing.join(', ')}`)
+      send('error', `Missing required inputs: ${missing.join(', ')}`)
       send('done', { ok: false })
       return res.end()
     }
 
-    if (flow === 'create') {
-      // 1) Bootstrap Headscale (external/local)
-      if (effectiveMode === 'external')
-        await runStep('Headscale bootstrap (external)', resolveScript('hs_bootstrap_external.sh'))
-      else await runStep('Headscale bootstrap (local)', resolveScript('hs_bootstrap_local.sh'))
+    // 1) Join this host to tailnet
+    const hostForJoin = TS_HOST || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
+    const ALLOW_INTERACTIVE =
+      process.env.SETUP_ALLOW_INTERACTIVE !== '0' && process.env.RUN_TAILSCALE_E2E !== '1'
+    let joined = false
+    const hasPwless = await isPasswordlessSudo()
+    if (process.platform === 'darwin') {
+      try {
+        send('step', { title: 'Join tailnet (non-interactive)' })
+        const svcOk = await ensureTailscaleService(false, (s) => send('log', s))
+        if (!svcOk) throw new Error('Tailscale service not reachable')
+        const args = [
+          'up',
+          `--login-server=${HS_URL}`,
+          `--authkey=${TS_KEY}`,
+          `--hostname=${hostForJoin}`,
+          '--accept-dns=false',
+          '--ssh=false',
+          '--reset',
+          '--force-reauth',
+        ]
+        const r = await runQuick('tailscale', args, { timeoutMs: 30000 })
+        if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+        const ok = await pollTailscaleConnected(60000)
+        if (!ok) throw new Error('tailscale did not connect within timeout')
+        send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+        joined = true
+      } catch (e: any) {
+        send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+        send('log', String(e && e.message ? e.message : e))
+      }
+    } else if (hasPwless) {
+      try {
+        send('step', { title: 'Join tailnet (non-interactive)' })
+        const svcOk = await ensureTailscaleService(true, (s) => send('log', s))
+        if (!svcOk) throw new Error('Tailscale service not reachable')
+        const args = [
+          'tailscale',
+          'up',
+          `--login-server=${HS_URL}`,
+          `--authkey=${TS_KEY}`,
+          `--hostname=${hostForJoin}`,
+          '--accept-dns=false',
+          '--ssh',
+          '--reset',
+          '--force-reauth',
+        ]
+        const r = await runQuick('sudo', ['-n', ...args], { timeoutMs: 20000 })
+        if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
+        const ok = await pollTailscaleConnected(60000)
+        if (!ok) throw new Error('tailscale did not connect within timeout')
+        send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
+        joined = true
+      } catch (e: any) {
+        send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
+        send('log', String(e && e.message ? e.message : e))
+      }
+    }
+    if (!joined && ALLOW_INTERACTIVE) {
+      send('step', { title: 'Join tailnet (interactive)' })
+      await spawnInteractiveJoin(HS_URL, TS_KEY, hostForJoin, (line) => send('log', line))
+      const ok = await pollTailscaleConnected(180000)
+      if (!ok) {
+        send('stepError', { title: 'Join tailnet (interactive)', code: 1 })
+        throw new Error('tailscale did not connect; please check the Terminal window or retry')
+      }
+      send('stepDone', { title: 'Join tailnet (interactive)', code: 0 })
+    }
+    if (!joined && !ALLOW_INTERACTIVE) {
+      throw new Error('Interactive join disabled and non-interactive join failed')
+    }
 
-      // Determine effective Headscale URL (for local, read generated config)
-      let effectiveHsUrl = HS_URL || ''
-      if (!effectiveHsUrl && effectiveMode === 'local') {
+    try {
+      const db = await getDB()
+      await db.run(
+        'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+        'tailscale_connected',
+        '1'
+      )
+    } catch {}
+
+    if (flow === 'create' && process.env.TEST_FAST_SETUP !== '1') {
+      // 2) Per-org steps: discover nodes via Tailscale and bootstrap with Talos
+      const orgs: string[] = []
+      if (orgParam) orgs.push(orgParam)
+      else {
         try {
-          const cfgPath = path.join(stateBaseDir(), '_tmp', 'headscale', 'config.yaml')
-          const text = fs.readFileSync(cfgPath, 'utf8')
-          const m = text.match(/server_url:\s*(\S+)/)
-          if (m) effectiveHsUrl = m[1]
+          const db = await getDB()
+          const rows: Array<{ name: string }> = await db.all('SELECT name FROM orgs ORDER BY id ASC')
+          rows.forEach((r) => orgs.push(r.name))
         } catch {}
       }
-      if (!effectiveHsUrl) send('warn', 'HEADSCALE_URL not found; tailscale join may fail')
-
-      // If no TS auth key provided and using local mode, generate one via the headscale container
-      let joinKey = TS_KEY || ''
-      if (!joinKey && effectiveMode === 'local') {
-        send('step', 'Generating Headscale preauth key (local)')
-        // Execute headscale CLI inside the running container with timeout/retries
-        const runHeadscale = async (subcmd: string[]) => {
-          const start = Date.now()
-          const deadline = start + 30_000 // 30s overall
-          let lastErr: any = null
-          while (Date.now() < deadline) {
-            try {
-              const out = await new Promise<string>((resolve, reject) => {
-                const args = [
-                  'exec',
-                  'headscale-local',
-                  'headscale',
-                  '-c',
-                  '/etc/headscale/cli.yaml',
-                  ...subcmd,
-                ]
-                const proc = spawn('docker', args, { env: process.env })
-                let out = ''
-                const timer = setTimeout(() => {
-                  try {
-                    proc.kill('SIGKILL')
-                  } catch {}
-                  reject(new Error('timeout'))
-                }, 10_000) // 10s per attempt
-                proc.stdout.on('data', (d) => (out += String(d)))
-                proc.stderr.on('data', (d) => (out += String(d)))
-                proc.on('close', (code) => {
-                  clearTimeout(timer)
-                  code === 0 ? resolve(out) : reject(new Error(out || String(code)))
-                })
-              })
-              return out
-            } catch (e) {
-              lastErr = e
-              await new Promise((r) => setTimeout(r, 1000))
-            }
-          }
-          throw lastErr || new Error('headscale exec failed')
-        }
+      for (const o of orgs) {
+        const env: Record<string, string> = {}
+        // Discover nodes via tailscale status
         try {
-          await runHeadscale(['users', 'create', 'default']).catch(() => '')
-
-          // Resolve the numeric user ID for the 'default' user, as v0.26 CLI requires --user <uint>
-          let userId = 0
-          try {
-            const usersJson = await runHeadscale(['users', 'list', '-o', 'json'])
-            try {
-              const parsed = JSON.parse(usersJson)
-              const arr: any[] = Array.isArray(parsed)
-                ? parsed
-                : Array.isArray((parsed as any).users)
-                  ? (parsed as any).users
-                  : []
-              for (const u of arr) {
-                const name = (u && (u.name || u.Name)) || ''
-                const idVal = u && (u.id ?? u.ID)
-                const idNum = Number(idVal)
-                if (String(name).toLowerCase() === 'default' && Number.isFinite(idNum)) {
-                  userId = idNum
-                  break
-                }
-              }
-            } catch {
-              // ignore JSON parse error; will try fallback below
+          const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 5000 })
+          if (r.code === 0 && r.out) {
+            const j = JSON.parse(r.out)
+            const peers = (j && (j.Peers || j.Peer || [])) || []
+            const self = j && j.Self ? [j.Self] : []
+            const all = Array.isArray(peers) ? peers.concat(self) : self
+            const up = o.toUpperCase()
+            const nameMatches = (hn: string, pref: string) => hn.toLowerCase().startsWith(pref)
+            const tagsOf = (p: any) => (p && (p.Tags || p.Tag || p.forcedTags || [])) || []
+            const ipv4 = (p: any): string =>
+              p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
+                ? Array.isArray(p.TailscaleIPs)
+                  ? p.TailscaleIPs.find((x: string) => x.includes('.')) || ''
+                  : String(p.TailAddr || '').includes('.')
+                    ? String(p.TailAddr)
+                    : ''
+                : ''
+            const cp: string[] = []
+            const wk: string[] = []
+            for (const p of all) {
+              const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '')
+              const ip = ipv4(p)
+              if (!ip) continue
+              if (nameMatches(hn, `${o}-cp-`)) cp.push(ip)
+              else if (nameMatches(hn, `${o}-worker-`)) wk.push(ip)
             }
-          } catch {
-            // ignore; try fallback userId
-          }
-          if (!userId || !Number.isFinite(userId)) {
-            // best-effort fallback: Headscale often creates the first user with ID=1
-            userId = 1
-            send('log', 'Could not resolve user ID for default; trying --user 1')
-          }
-          const out = await runHeadscale([
-            'preauthkeys',
-            'create',
-            '--reusable',
-            '--expiration',
-            '48h',
-            '--user',
-            String(userId),
-            '-o',
-            'json',
-          ])
-          // Extract key robustly from JSON, falling back to list and regex
-          const findTsKeyDeep = (obj: any): string | '' => {
-            if (!obj) return ''
-            if (typeof obj === 'string') return obj.startsWith('tskey-') ? obj : ''
-            if (Array.isArray(obj)) {
-              for (const v of obj) {
-                const k = findTsKeyDeep(v)
-                if (k) return k
-              }
-              return ''
-            }
-            if (typeof obj === 'object') {
-              for (const k of Object.keys(obj)) {
-                const v = (obj as any)[k]
-                const found = findTsKeyDeep(v)
-                if (found) return found
+            if (!cp.length || !wk.length) {
+              for (const p of all) {
+                const ip = ipv4(p)
+                if (!ip) continue
+                const tags = tagsOf(p).map((t: any) => String(t))
+                if (!cp.length && tags.some((t: string) => /(^|:)cp($|:)/i.test(t))) cp.push(ip)
+                if (!wk.length && tags.some((t: string) => /(^|:)worker($|:)/i.test(t))) wk.push(ip)
               }
             }
-            return ''
+            if (cp.length) env[`${up}_CP_NODES`] = cp.join(' ')
+            if (wk.length) env[`${up}_WORKER_NODES`] = wk.join(' ')
           }
-          const findAnyKeyField = (obj: any): string | '' => {
-            if (!obj) return ''
-            if (typeof obj === 'object' && !Array.isArray(obj)) {
-              for (const k of Object.keys(obj)) {
-                if (k.toLowerCase() === 'key' && typeof (obj as any)[k] === 'string') {
-                  const val = String((obj as any)[k]).trim()
-                  if (val) return val
-                }
-              }
-              for (const k of Object.keys(obj)) {
-                const v = (obj as any)[k]
-                const deep = findAnyKeyField(v)
-                if (deep) return deep
-              }
-            } else if (Array.isArray(obj)) {
-              for (const v of obj) {
-                const deep = findAnyKeyField(v)
-                if (deep) return deep
-              }
-            }
-            return ''
-          }
-          let parsedAny: any = null
-          try {
-            parsedAny = JSON.parse(out)
-            let k = ''
-            // Prefer explicit 'key' field, accept any string
-            if (parsedAny && typeof parsedAny === 'object') {
-              const direct = parsedAny.key || parsedAny.Key
-              if (typeof direct === 'string' && direct.trim()) k = direct.trim()
-            }
-            if (!k) k = findAnyKeyField(parsedAny)
-            if (!k) k = findTsKeyDeep(parsedAny)
-            if (k) joinKey = k
-          } catch {}
-          if (!joinKey) {
-            // Fallback: list keys and choose the newest for the user
-            try {
-              const listOut = await runHeadscale([
-                'preauthkeys',
-                'list',
-                '--user',
-                String(userId),
-                '-o',
-                'json',
-              ])
-              try {
-                const lj = JSON.parse(listOut)
-                const findNewest = (arr: any[]): string | '' => {
-                  let best = ''
-                  let bestTime = 0
-                  for (const item of arr) {
-                    let keyStr = ''
-                    const direct = item && (item.key || item.Key)
-                    if (typeof direct === 'string' && direct.trim()) keyStr = direct.trim()
-                    if (!keyStr) keyStr = findAnyKeyField(item)
-                    if (!keyStr) keyStr = findTsKeyDeep(item)
-                    if (!keyStr) continue
-                    const created =
-                      Date.parse(item.CreatedAt || item.created_at || item.created || '') ||
-                      Date.now()
-                    if (!best || created >= bestTime) {
-                      best = keyStr
-                      bestTime = created
-                    }
-                  }
-                  return best
-                }
-                if (Array.isArray(lj)) {
-                  const kk = findNewest(lj)
-                  if (kk) joinKey = kk
-                } else if (Array.isArray((lj as any).preauthkeys)) {
-                  const kk = findNewest((lj as any).preauthkeys)
-                  if (kk) joinKey = kk
-                }
-              } catch {}
-            } catch {}
-          }
-          if (!joinKey) {
-            const m1 = out.match(/\btskey-[A-Za-z0-9]+\b/)
-            if (m1) joinKey = m1[0]
-          }
-          if (!joinKey) {
-            const m2 = out.match(/\b[0-9a-fA-F]{16,}\b/)
-            if (m2) joinKey = m2[0]
-          }
-          if (!joinKey) throw new Error('failed to parse generated key')
-          send('log', `Generated TS_AUTHKEY for local Headscale`)
-        } catch (e) {
-          send('stepError', String(e))
-          throw e
+        } catch {}
+        if (!env[`${o.toUpperCase()}_CP_NODES`]) {
+          send('hint', `No control-plane nodes for '${o}'. Name nodes '${o}-cp-*' or tag with 'cp'.`)
         }
+        await runStep(`Talos org bootstrap (${o})`, resolveScript('talos_org_bootstrap.sh'), [o], env)
+        await runStep(`Install Tailscale Operator (${o})`, resolveScript('install_tailscale_operator.sh'), [o])
+        await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
       }
-
-      // 2) Join this host to tailnet (required for success)
-      const hostForJoin = TS_HOST || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
-      const ALLOW_INTERACTIVE =
-        process.env.SETUP_ALLOW_INTERACTIVE !== '0' && process.env.RUN_TAILSCALE_E2E !== '1'
-      let joined = false
-      // Try non-interactive first
-      const hasPwless = await isPasswordlessSudo()
-      if (process.platform === 'darwin') {
-        try {
-          send('step', { title: 'Join tailnet (non-interactive)' })
-          const svcOk = await ensureTailscaleService(false, (s) => send('log', s))
-          if (!svcOk) throw new Error('Tailscale service not reachable')
-          const args = [
-            'up',
-            `--login-server=${effectiveHsUrl}`,
-            `--authkey=${joinKey}`,
-            `--hostname=${hostForJoin}`,
-            '--accept-dns=false',
-            '--ssh=false',
-            '--reset',
-            '--force-reauth',
-          ]
-          const r = await runQuick('tailscale', args, { timeoutMs: 30000 })
-          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
-          const ok = await pollTailscaleConnected(60000)
-          if (!ok) throw new Error('tailscale did not connect within timeout')
-          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
-          joined = true
-        } catch (e: any) {
-          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
-          send('log', String(e && e.message ? e.message : e))
-        }
-      } else if (hasPwless) {
-        try {
-          send('step', { title: 'Join tailnet (non-interactive)' })
-          const svcOk = await ensureTailscaleService(true, (s) => send('log', s))
-          if (!svcOk) throw new Error('Tailscale service not reachable')
-          const args = [
-            'tailscale',
-            'up',
-            `--login-server=${effectiveHsUrl}`,
-            `--authkey=${joinKey}`,
-            `--hostname=${hostForJoin}`,
-            '--accept-dns=false',
-            '--ssh',
-            '--reset',
-            '--force-reauth',
-          ]
-          const r = await runQuick('sudo', ['-n', ...args], { timeoutMs: 20000 })
-          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
-          const ok = await pollTailscaleConnected(60000)
-          if (!ok) throw new Error('tailscale did not connect within timeout')
-          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
-          joined = true
-        } catch (e: any) {
-          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
-          send('log', String(e && e.message ? e.message : e))
-        }
-      }
-      if (!joined && ALLOW_INTERACTIVE) {
-        // Interactive: open a terminal and poll status
-        send('step', { title: 'Join tailnet (interactive)' })
-        await spawnInteractiveJoin(effectiveHsUrl, joinKey, hostForJoin, (line) =>
-          send('log', line)
-        )
-        const ok = await pollTailscaleConnected(180000)
-        if (!ok) {
-          send('stepError', { title: 'Join tailnet (interactive)', code: 1 })
-          throw new Error(
-            'tailscale did not connect; please check the Terminal window or try again'
-          )
-        }
-        send('stepDone', { title: 'Join tailnet (interactive)', code: 0 })
-      }
-      if (!joined && !ALLOW_INTERACTIVE) {
-        throw new Error('Interactive join disabled and non-interactive join failed')
-      }
-      try {
-        const db = await getDB()
-        await db.run(
-          'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
-          'tailscale_connected',
-          '1'
-        )
-      } catch {}
-
+      await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
+    } else if (flow === 'connect') {
       if (process.env.TEST_FAST_SETUP !== '1') {
-        // 3) Per-org steps (DB-backed; UI should pass org, else use all stored)
-        const orgs: string[] = []
-        if (orgParam) orgs.push(orgParam)
-        else {
-          try {
-            const db = await getDB()
-            const rows: Array<{ name: string }> = await db.all(
-              'SELECT name FROM orgs ORDER BY id ASC'
-            )
-            rows.forEach((r) => orgs.push(r.name))
-          } catch {}
-        }
-        for (const o of orgs) {
-          // Auto-discover node IPs via Tailscale by org naming/tag conventions.
-          // Heuristics: prefer devices with HostName starting with `${org}-cp-` for control-plane
-          // and `${org}-worker-` for workers; fallback to tags `tag:org:cp` / `tag:org:worker`.
-          const discoverNodes = async (orgName: string) => {
-            const upper = orgName.toUpperCase()
-            let cp: string[] = []
-            let wk: string[] = []
-            try {
-              const r = await runQuick('tailscale', ['status', '--json'], { timeoutMs: 5000 })
-              if (r.code === 0 && r.out) {
-                try {
-                  const j = JSON.parse(r.out)
-                  const peers = (j && (j.Peers || j.Peer || j.Peer || [])) || []
-                  const self = j && j.Self ? [j.Self] : []
-                  const all = Array.isArray(peers) ? peers.concat(self) : self
-                  const nameMatches = (hn: string, pref: string) =>
-                    hn.toLowerCase().startsWith(pref.toLowerCase())
-                  const ipv4 = (p: any): string =>
-                    p && (p.TailscaleIPs || p.TailscaleIP || p.TailAddr || [])
-                      ? Array.isArray(p.TailscaleIPs)
-                        ? p.TailscaleIPs.find((x: string) => x.includes('.'))
-                        : String(p.TailAddr || '').includes('.')
-                          ? String(p.TailAddr)
-                          : ''
-                      : ''
-                  // Collect by hostname prefix first
-                  for (const p of all) {
-                    const hn = String((p && (p.HostName || p.Hostname || p.DNSName || '')) || '')
-                    const ip = ipv4(p)
-                    if (!ip) continue
-                    if (nameMatches(hn, `${orgName}-cp-`)) cp.push(ip)
-                    else if (nameMatches(hn, `${orgName}-worker-`)) wk.push(ip)
-                  }
-                  // If empty, consider tags if available
-                  const getTags = (p: any): string[] =>
-                    (p && (p.Tags || p.Tag || p.forcedTags || [])) || []
-                  if (cp.length === 0 || wk.length === 0) {
-                    for (const p of all) {
-                      const ip = ipv4(p)
-                      if (!ip) continue
-                      const tags = getTags(p).map((t: any) => String(t))
-                      if (cp.length === 0 && tags.some((t) => /(^|:)cp($|:)/i.test(t))) cp.push(ip)
-                      if (wk.length === 0 && tags.some((t) => /(^|:)worker($|:)/i.test(t)))
-                        wk.push(ip)
-                    }
-                  }
-                } catch {}
-              }
-            } catch {}
-            // Return env overrides
-            const env: Record<string, string> = {}
-            if (cp.length) env[`${upper}_CP_NODES`] = cp.join(' ')
-            if (wk.length) env[`${upper}_WORKER_NODES`] = wk.join(' ')
-            return env
-          }
-          const env = await discoverNodes(o)
-          if (!env[`${o.toUpperCase()}_CP_NODES`]) {
-            try {
-              send(
-                'hint',
-                `No control-plane nodes discovered for '${o}'. Ensure Tailscale devices are named '${o}-cp-*' and workers '${o}-worker-*', or tagged with 'cp'/'worker'.`
-              )
-            } catch {}
-          }
-          await runStep(
-            `Talos org bootstrap (${o})`,
-            resolveScript('talos_org_bootstrap.sh'),
-            [o],
-            env
-          )
-          await runStep(
-            `Install Tailscale Operator (${o})`,
-            resolveScript('install_tailscale_operator.sh'),
-            [o]
-          )
-          await runStep(`Deploy demo app (${o})`, resolveScript('demo_app.sh'), [o])
-        }
-
-        // 4) Start orchestrator/dashboard
-        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
-          'up',
-        ])
+        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), ['up'])
       }
-      send('done', { ok: true })
-    } else {
-      // connect flow: join tailnet and start services; cluster must already exist
-      const hostForJoin = TS_HOST || `orchestrator-${Math.random().toString(36).slice(2, 8)}`
-      const ALLOW_INTERACTIVE =
-        process.env.SETUP_ALLOW_INTERACTIVE !== '0' && process.env.RUN_TAILSCALE_E2E !== '1'
-      const hsUrl = HS_URL || ''
-      const key = TS_KEY || ''
-      let joined = false
-      const hasPwless = await isPasswordlessSudo()
-      if (process.platform === 'darwin' && hsUrl && key) {
-        try {
-          send('step', { title: 'Join tailnet (non-interactive)' })
-          const svcOk = await ensureTailscaleService(false, (s) => send('log', s))
-          if (!svcOk) throw new Error('Tailscale service not reachable')
-          const args = [
-            'up',
-            `--login-server=${hsUrl}`,
-            `--authkey=${key}`,
-            `--hostname=${hostForJoin}`,
-            '--accept-dns=false',
-            '--ssh=false',
-            '--reset',
-            '--force-reauth',
-          ]
-          const r = await runQuick('tailscale', args, { timeoutMs: 30000 })
-          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
-          const ok = await pollTailscaleConnected(60000)
-          if (!ok) throw new Error('tailscale did not connect within timeout')
-          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
-          joined = true
-        } catch (e: any) {
-          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
-          send('log', String(e && e.message ? e.message : e))
-        }
-      } else if (hasPwless && hsUrl && key) {
-        try {
-          send('step', { title: 'Join tailnet (non-interactive)' })
-          const svcOk = await ensureTailscaleService(true, (s) => send('log', s))
-          if (!svcOk) throw new Error('Tailscale service not reachable')
-          const args = [
-            'tailscale',
-            'up',
-            `--login-server=${hsUrl}`,
-            `--authkey=${key}`,
-            `--hostname=${hostForJoin}`,
-            '--accept-dns=false',
-            '--ssh',
-            '--reset',
-            '--force-reauth',
-          ]
-          const r = await runQuick('sudo', ['-n', ...args], { timeoutMs: 20000 })
-          if (r.code !== 0) throw new Error(r.out || 'tailscale up failed')
-          const ok = await pollTailscaleConnected(60000)
-          if (!ok) throw new Error('tailscale did not connect within timeout')
-          send('stepDone', { title: 'Join tailnet (non-interactive)', code: 0 })
-          joined = true
-        } catch (e: any) {
-          send('stepError', { title: 'Join tailnet (non-interactive)', code: 1 })
-          send('log', String(e && e.message ? e.message : e))
-        }
-      }
-      if (!joined && hsUrl && key && ALLOW_INTERACTIVE) {
-        send('step', { title: 'Join tailnet (interactive)' })
-        await spawnInteractiveJoin(hsUrl, key, hostForJoin, (line) => send('log', line))
-        const ok = await pollTailscaleConnected(180000)
-        if (!ok) {
-          send('stepError', { title: 'Join tailnet (interactive)', code: 1 })
-          throw new Error(
-            'tailscale did not connect; please check the Terminal window or try again'
-          )
-        }
-        send('stepDone', { title: 'Join tailnet (interactive)', code: 0 })
-      } else if (!joined) {
-        // Missing inputs for connect; handled by earlier validation usually
-        if (!hsUrl || !key)
-          throw new Error('Missing HEADSCALE_URL/TS_AUTHKEY/TS_HOSTNAME for connect flow')
-        if (!ALLOW_INTERACTIVE)
-          throw new Error('Interactive join disabled and non-interactive join failed')
-      }
-      try {
-        const db = await getDB()
-        await db.run(
-          'INSERT INTO kv(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
-          'tailscale_connected',
-          '1'
-        )
-      } catch {}
-      if (process.env.TEST_FAST_SETUP !== '1') {
-        // Optional: check kubeconfigs for common orgs and emit guidance
-        const guessOrgs = ['acme', 'devrel']
-        for (const o of guessOrgs) {
-          const kc = path.join(process.env.HOME || '/root', '.kube', `${o}.config`)
-          if (!fs.existsSync(kc)) send('hint', `Missing kubeconfig for org '${o}': ${kc}`)
-        }
-        await runStep('Start orchestrator + dashboard', resolveScript('start_orchestrator.sh'), [
-          'up',
-        ])
-      }
-      send('done', { ok: true })
     }
+
+    send('done', { ok: true })
   } catch (e: any) {
     send('error', String(e && e.message ? e.message : e))
     send('done', { ok: false })

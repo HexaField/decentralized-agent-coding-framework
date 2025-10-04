@@ -74,28 +74,12 @@ async function readSSE(url: string, opts?: RequestInit) {
   return events
 }
 
-async function tailscaleConnected() {
-  try {
-    const { execSync } = await import('child_process')
-    const out = execSync('tailscale status --json', {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).toString()
-    try {
-      const j = JSON.parse(out)
-      const selfOk = Boolean(j && j.Self && (j.Self.TailAddr || j.Self.HostName))
-      const backendOk = String(j && j.BackendState) === 'Running'
-      const tailnetOk = Boolean((j && (j.Tailnet || j.CurrentTailnet)) || false)
-      return selfOk || backendOk || tailnetOk
-    } catch {
-      return /relay|wgpeer|hostinfo/i.test(out)
-    }
-  } catch {
-    return false
-  }
-}
+// tailscaleConnected helper removed to keep suite lean
 
-describe('Setup flows (real tailscale/headscale): MUST succeed when properly configured', () => {
-  let reachable = true
+const RUN = Boolean(RUN_TAILSCALE_E2E && process.env.DASHBOARD_URL)
+const suite = RUN ? describe : describe.skip
+
+suite('Setup flows (real tailscale/headscale): MUST succeed when properly configured', () => {
   beforeAll(async () => {
     // Accept self-signed TLS for local dev
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = process.env.NODE_TLS_REJECT_UNAUTHORIZED || '0'

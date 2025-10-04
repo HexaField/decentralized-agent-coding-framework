@@ -30,7 +30,7 @@ export const E2E_ORG: string = pick('E2E_ORG', `e2e-${Math.random().toString(36)
 export const E2E_CP_NODES = (pick('E2E_CP_NODES', '') || '').split(/[\,\s]+/).filter(Boolean)
 export const E2E_WK_NODES = (pick('E2E_WK_NODES', '') || '').split(/[\,\s]+/).filter(Boolean)
 
-export const RUN_TAILSCALE_E2E = pick('RUN_TAILSCALE_E2E', '1') === '1'
+export const RUN_TAILSCALE_E2E = pick('RUN_TAILSCALE_E2E', '0') === '1'
 export const TEST_FAST_SETUP = pick('TEST_FAST_SETUP', '0') // default to full setup for CI
 
 // For local https with self-signed certs

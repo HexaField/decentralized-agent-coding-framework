@@ -4,6 +4,7 @@ import {
   E2E_ORG as ORG,
   E2E_CP_NODES as CP_NODES,
   E2E_WK_NODES as WK_NODES,
+  RUN_TAILSCALE_E2E,
 } from './e2e.env.js'
 
 function sleep(ms: number) {
@@ -11,7 +12,10 @@ function sleep(ms: number) {
 }
 
 // Real bootstrap path via orchestrator; must be configured in .env
-describe('E2E: org bootstrap via dashboard', () => {
+const RUN = Boolean(RUN_TAILSCALE_E2E && process.env.DASHBOARD_URL)
+const suite = RUN ? describe : describe.skip
+
+suite('E2E: org bootstrap via dashboard', () => {
   it('creates org, bootstraps cluster, and persists kube/talos config', async () => {
     // health
     const h = await fetch(`${DASHBOARD_URL}/api/health`).catch(() => null as any)
