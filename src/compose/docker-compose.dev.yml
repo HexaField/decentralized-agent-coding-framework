@@ -8,6 +8,6 @@ services:
       - DASHBOARD_TOKEN=${DASHBOARD_TOKEN}
     volumes:
       - ../dashboard:/app
-      - ${HOME:-~}/.guildnet/state:/state
+      - ${GUILDNET_STATE_DIR:-${HOME:-~}/.guildnetdev/state}:/state
     ports:
       - "8090:8090"

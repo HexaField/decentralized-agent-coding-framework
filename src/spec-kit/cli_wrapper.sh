@@ -2,7 +2,15 @@
 set -euo pipefail
 CMD=${1:-}
 ARG=${2:-}
-STATE_DIR="${HOME:-/root}/.guildnet/state"
+if [[ -n "${GUILDNET_STATE_DIR:-}" ]]; then
+  STATE_DIR="$GUILDNET_STATE_DIR"
+elif [[ -n "${GUILDNET_HOME:-}" ]]; then
+  STATE_DIR="$GUILDNET_HOME/state"
+elif [[ "${GUILDNET_ENV:-}" == "dev" ]]; then
+  STATE_DIR="${HOME:-/root}/.guildnetdev/state"
+else
+  STATE_DIR="${HOME:-/root}/.guildnet/state"
+fi
 mkdir -p "$STATE_DIR/spec-kit"
 case "$CMD" in
   new-task)

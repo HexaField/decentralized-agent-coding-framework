@@ -107,10 +107,33 @@ func getenvDefault(k, def string) string {
 }
 
 // resolve a writable base directory for persistent state
-// fixed: ~/.guildnet/state
+// prod default: ~/.guildnet/state
+// dev default:  ~/.guildnetdev/state
+// override order:
+//   1) GUILDNET_STATE_DIR (absolute path)
+//   2) ORCHESTRATOR_STATE_DIR (absolute path; compat)
+//   3) GUILDNET_HOME + "/state"
+//   4) if GUILDNET_ENV=dev then ~/.guildnetdev/state else ~/.guildnet/state
 func stateBaseDir() string {
-    home, _ := os.UserHomeDir()
-    if home == "" { home = "." }
+    if v := os.Getenv("GUILDNET_STATE_DIR"); v != "" {
+        _ = os.MkdirAll(v, 0o755)
+        return v
+    }
+    if v := os.Getenv("ORCHESTRATOR_STATE_DIR"); v != "" { // compat
+        _ = os.MkdirAll(v, 0o755)
+        return v
+    }
+    if homeBase := os.Getenv("GUILDNET_HOME"); homeBase != "" {
+        base := homeBase + "/state"
+        _ = os.MkdirAll(base, 0o755)
+        return base
+    }
+    home, _ := os.UserHomeDir(); if home == "" { home = "." }
+    if os.Getenv("GUILDNET_ENV") == "dev" {
+        base := home + "/.guildnetdev/state"
+        _ = os.MkdirAll(base, 0o755)
+        return base
+    }
     base := home + "/.guildnet/state"
     _ = os.MkdirAll(base, 0o755)
     return base

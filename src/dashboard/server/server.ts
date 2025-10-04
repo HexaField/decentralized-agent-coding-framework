@@ -196,10 +196,33 @@ function getDB() {
 
 // Helpers: small process runners and platform actions
 // Resolve a writable base directory for persistent state.
-// State lives under ~/.guildnet/state; containers map host ${HOME}/.guildnet/state to /state
+// State lives under dev or prod base depending on env:
+// - If DASHBOARD_STATE_DIR is set, use it
+// - Else if GUILDNET_STATE_DIR is set, use it
+// - Else if GUILDNET_HOME is set, use `${GUILDNET_HOME}/state`
+// - Else default: ~/.guildnetdev/state when GUILDNET_ENV=dev, otherwise ~/.guildnet/state
 function stateBaseDir(): string {
+  const override = process.env.DASHBOARD_STATE_DIR || process.env.GUILDNET_STATE_DIR
+  if (override) {
+    try {
+      fs.mkdirSync(override, { recursive: true })
+    } catch {}
+    return override
+  }
+  const baseHome = process.env.GUILDNET_HOME
+  if (baseHome) {
+    const dir = path.join(baseHome, 'state')
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch {}
+    return dir
+  }
   const home = process.env.HOME || process.env.USERPROFILE || '.'
-  const dir = path.join(home, '.guildnet', 'state')
+  const isDev =
+    process.env.GUILDNET_ENV === 'dev' ||
+    process.env.NODE_ENV === 'development' ||
+    process.env.UI_DEV === '1'
+  const dir = path.join(home, isDev ? '.guildnetdev' : '.guildnet', 'state')
   try {
     fs.mkdirSync(dir, { recursive: true })
   } catch {}

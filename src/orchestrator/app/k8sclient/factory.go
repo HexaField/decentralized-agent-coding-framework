@@ -13,13 +13,29 @@ import (
 )
 
 // KubeconfigPathForOrg resolves kubeconfig for a given org.
-// Preference: env KUBECONFIG -> ~/.guildnet/state/kube/<org>.config -> ~/.kube/<org>.config
+// Preference:
+// 1) env KUBECONFIG
+// 2) ${GUILDNET_STATE_DIR:-${GUILDNET_HOME}/state or default}/kube/<org>.config
+//    where default base is ~/.guildnetdev/state if GUILDNET_ENV=dev else ~/.guildnet/state
+// 3) ~/.kube/<org>.config
 func KubeconfigPathForOrg(org string) string {
     if kc := os.Getenv("KUBECONFIG"); kc != "" {
         if _, err := os.Stat(kc); err == nil { return kc }
     }
+    // base resolution
+    if base := os.Getenv("GUILDNET_STATE_DIR"); base != "" {
+        state := filepath.Join(base, "kube", org+".config")
+        if _, err := os.Stat(state); err == nil { return state }
+    }
+    if baseHome := os.Getenv("GUILDNET_HOME"); baseHome != "" {
+        state := filepath.Join(baseHome, "state", "kube", org+".config")
+        if _, err := os.Stat(state); err == nil { return state }
+    }
     home, _ := os.UserHomeDir(); if home == "" { home = "/root" }
-    state := filepath.Join(home, ".guildnet", "state", "kube", org+".config")
+    // choose dev vs prod default
+    var base string
+    if os.Getenv("GUILDNET_ENV") == "dev" { base = filepath.Join(home, ".guildnetdev", "state") } else { base = filepath.Join(home, ".guildnet", "state") }
+    state := filepath.Join(base, "kube", org+".config")
     if _, err := os.Stat(state); err == nil { return state }
     homeCfg := filepath.Join(home, ".kube", org+".config")
     return homeCfg

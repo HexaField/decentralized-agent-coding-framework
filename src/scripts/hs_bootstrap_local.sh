@@ -17,7 +17,17 @@ export HEADSCALE_URL="http://${HEADSCALE_BIND_IP}:${HEADSCALE_PORT}"
 echo "Starting local Headscale on ${HEADSCALE_BIND_IP}:${HEADSCALE_PORT}..."
 docker rm -f headscale-local >/dev/null 2>&1 || true
 HOME_DIR="${HOME:-/root}"
-CONF_DIR="${HOME_DIR}/.guildnet/state/_tmp/headscale"
+# Determine state dir (dev vs prod)
+if [[ -n "${GUILDNET_STATE_DIR:-}" ]]; then
+  STATE_DIR="$GUILDNET_STATE_DIR"
+elif [[ -n "${GUILDNET_HOME:-}" ]]; then
+  STATE_DIR="$GUILDNET_HOME/state"
+elif [[ "${GUILDNET_ENV:-}" == "dev" ]]; then
+  STATE_DIR="${HOME_DIR}/.guildnetdev/state"
+else
+  STATE_DIR="${HOME_DIR}/.guildnet/state"
+fi
+CONF_DIR="${STATE_DIR}/_tmp/headscale"
 mkdir -p "${CONF_DIR}"
 cat > "${CONF_DIR}/config.yaml" <<YAML
 server_url: ${HEADSCALE_URL}

@@ -2,6 +2,34 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "Clean: wipe local state (safe)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"chmod +x src/scripts/cleanup_all.sh && src/scripts/cleanup_all.sh"
+			],
+			"group": "none",
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "Clean: wipe local state (dev)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"GUILDNET_ENV=dev chmod +x src/scripts/cleanup_all.sh && GUILDNET_ENV=dev src/scripts/cleanup_all.sh"
+			],
+			"group": "none",
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
 			"label": "CI: Build/test orchestrator and dashboard",
 			"type": "shell",
 			"command": "bash",
