@@ -20,11 +20,9 @@ elif [[ "${GUILDNET_ENV:-}" == "dev" ]]; then
 else
   STATE_DIR="$HOME_DIR/.guildnet/state"
 fi
-REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 
 echo "[clean] HOME=$HOME_DIR"
 echo "[clean] STATE_DIR=$STATE_DIR"
-echo "[clean] REPO_DIR=$REPO_DIR"
 
 echo "[clean] Docker: remove local Headscale container/volume/networks"
 docker rm -f headscale-local >/dev/null 2>&1 || true
@@ -40,8 +38,8 @@ echo "[clean] Remove kube/talos state in ~/.guildnet/state"
 rm -rf "$STATE_DIR/kube" "$STATE_DIR/talos" 2>/dev/null || true
 
 echo "[clean] Also remove any repo-local persisted state (if used during dev)"
-rm -f "$REPO_DIR/state/dashboard.db" 2>/dev/null || true
-rm -rf "$REPO_DIR/state/kube" "$REPO_DIR/state/talos" 2>/dev/null || true
+rm -f "$STATE_DIR/dashboard.db" 2>/dev/null || true
+rm -rf "$STATE_DIR/kube" "$STATE_DIR/talos" 2>/dev/null || true
 
 echo "[clean] Tailscale teardown (optional, best-effort; macOS no-sudo)"
 if command -v tailscale >/dev/null 2>&1; then
