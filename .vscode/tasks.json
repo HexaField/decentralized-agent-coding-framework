@@ -435,6 +435,46 @@
 				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
 			],
 			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (SSE provision)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (extended SSE)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests (all)",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
+		},
+		{
+			"label": "Run dashboard tests after state dir fix",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"-lc",
+				"cd /Users/josh/Desktop/decentralized-agent-coding-framework/src/dashboard && npm -s test --silent"
+			],
+			"group": "test"
 		}
 	]
 }

@@ -131,9 +131,28 @@ const chats: { global: Array<{ role: string; text: string }> } = { global: [] }
 
 // State base directory under HOME (dev vs prod)
 function stateBaseDir(): string {
+  // Resolution order per architecture:
+  // 1) GUILDNET_STATE_DIR
+  // 2) GUILDNET_HOME/state
+  // 3) ~/.guildnetdev/state when GUILDNET_ENV=dev, else ~/.guildnet/state
+  const override = process.env.GUILDNET_STATE_DIR
+  if (override && override.trim()) {
+    try {
+      fs.mkdirSync(override, { recursive: true })
+    } catch {}
+    return override
+  }
+  const gnHome = process.env.GUILDNET_HOME
+  if (gnHome && gnHome.trim()) {
+    const dir = path.join(gnHome, 'state')
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch {}
+    return dir
+  }
   const home = process.env.HOME || '/root'
-  const env = process.env.GUILDNET_ENV === 'dev' ? '.guildnetdev' : '.guildnet'
-  const dir = path.join(home, env, 'state')
+  const envDir = process.env.GUILDNET_ENV === 'dev' ? '.guildnetdev' : '.guildnet'
+  const dir = path.join(home, envDir, 'state')
   try {
     fs.mkdirSync(dir, { recursive: true })
   } catch {}
